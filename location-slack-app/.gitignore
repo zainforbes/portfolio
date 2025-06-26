@@ -1,0 +1,10 @@
+# Environment files
+env
+.env
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Isochrone outputs
+isochrones/
