@@ -1,2 +1,2 @@
 # portfolio
-A portfolio of projects
+A portfolio of my personal projects

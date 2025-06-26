@@ -1,0 +1,6 @@
+slack-bolt
+python-dotenv
+openrouteservice
+openai
+folium
+requests
