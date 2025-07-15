@@ -9,7 +9,6 @@ cv_chunks.pkl
 
 # Models & Data
 models/
-data/
 
 # Environment
 .env
