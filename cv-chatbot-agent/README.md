@@ -87,4 +87,4 @@ If you run into issues or have feedback, open an issue or PR on GitHub.
 
 ## 📄 License
 
-MIT License © 2025 Your Name
+MIT License © 2025 Zain Forbes
