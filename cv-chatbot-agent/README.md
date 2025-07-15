@@ -62,22 +62,6 @@ Open your browser to [http://localhost:8501](http://localhost:8501).
 
 ---
 
-## 📦 Deployment
-
-Use **Streamlit Community Cloud** to host for free:
-
-1. Push the `cv-chatbot/` folder to GitHub.  
-2. Visit https://share.streamlit.io → **New app** → connect your repo.  
-3. Set **Repository** to `your-username/portfolio`, **Branch** to `main`, **File path** to `cv-chatbot/main.py`.  
-4. In **Advanced settings**, add an environment variable:  
-   - **Key:** `GROQ_API_KEY`  
-   - **Value:** your Groq API key  
-5. Click **Deploy**.
-
-You’ll get a live URL (e.g. `https://your-username-portfolio-cv-chatbot.streamlit.app`) to share—no local startup needed.
-
----
-
 ## 🎯 Usage
 
 - **Test API**: Click “Test API Connection” in the sidebar to verify your key.  
