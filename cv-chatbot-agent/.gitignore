@@ -5,3 +5,6 @@ env/
 
 #Environment
 .env
+
+# VS Code settings
+.vscode/
