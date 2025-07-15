@@ -1,26 +1,47 @@
 import os
 from dotenv import load_dotenv
-import PyPDF2
 
+# Load .env in local dev
 load_dotenv()
 
 def get_api_key() -> str:
     """
-    Reads GROQ_API_KEY from .env and errors if missing.
+    Retrieve GROQ API key from Streamlit secrets (when deployed) or environment (.env/local).
+    Raises an error if not found.
     """
-    key = os.getenv("GROQ_API_KEY")
+    # First try Streamlit secrets (for Cloud deployments)
+    key = None
+    try:
+        import streamlit as st
+        key = st.secrets.get("GROQ_API_KEY")
+    except Exception:
+        pass
+
+    # Fallback to environment variable
     if not key:
-        raise ValueError("Please set GROQ_API_KEY in your .env")
+        key = os.getenv("GROQ_API_KEY")
+
+    if not key:
+        raise ValueError(
+            "Hello! I couldn’t find your GROQ_API_KEY. "
+            "Please add it to a local .env or to your Streamlit Cloud secrets."
+        )
     return key
+
 
 def extract_pdf_text(file) -> str:
     """
-    Take an uploaded PDF file-like and return its full text.
+    Read uploaded PDF file-like object and return its full text.
     """
+    try:
+        import PyPDF2
+    except ImportError:
+        raise ImportError("PyPDF2 is required to extract PDF text. Please install it.")
+
     reader = PyPDF2.PdfReader(file)
-    text_pages = []
+    pages = []
     for page in reader.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text_pages.append(page_text)
-    return "\n".join(text_pages)
+        text = page.extract_text()
+        if text:
+            pages.append(text)
+    return "\n".join(pages)
