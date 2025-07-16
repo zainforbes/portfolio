@@ -1,6 +1,7 @@
 # 🤖 CV Interview Chatbot
 
 A Streamlit app that lets you engage in a “mock interview” with your own CV. Powered by Groq’s `llama3-8b-8192` API, it combines PDF‐text extraction, prompt engineering, and real-time chat for fast, professional Q&A based on your résumé content.
+Demo at: https://zain-cv-chatbot.streamlit.app/
 
 ---
 
