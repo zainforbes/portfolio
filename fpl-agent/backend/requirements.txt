@@ -1,0 +1,7 @@
+fastapi>=0.112.0
+uvicorn[standard]>=0.30.0
+requests>=2.31.0
+pandas>=2.2.0
+pulp>=2.8.0
+openai>=1.40.0
+python-dotenv>=1.0.1
