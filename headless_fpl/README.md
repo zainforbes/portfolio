@@ -142,4 +142,4 @@ python fpl_headless.py --gw 1 --budget 100.0 --formation 3-4-3
 
 ## License
 
-MIT. Do whatever you like—credit appreciated.
+MIT.
