@@ -230,4 +230,4 @@ Respect FPL’s terms; don’t hammer their endpoints.
 
 ## 📄 License
 
-MIT (change if you prefer)
+MIT 
