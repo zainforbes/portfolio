@@ -1,8 +1,12 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel
 
 class AssistantState(BaseModel):
     user_input: str
-    route: Optional[str] = None   # which agent to route to
-    result: Optional[Any] = None  # output of the selected agent
-    context: Dict[str, Any] = {}  # any extra metadata
+    route: Optional[str] = None
+    route_confidence: float = 0.0
+    result: Optional[Any] = None
+    context: Dict[str, Any] = {}
+    delegate: Optional[str] = None
+    error: Optional[str] = None
+    logs: List[str] = []
