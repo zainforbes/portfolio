@@ -10,3 +10,5 @@ class AssistantState(BaseModel):
     delegate: Optional[str] = None
     error: Optional[str] = None
     logs: List[str] = []
+    verify_score: float = 0.0           # 0..1 quality score from verifier
+    verify_notes: List[str] = []        # quick notes on issues / fixes
