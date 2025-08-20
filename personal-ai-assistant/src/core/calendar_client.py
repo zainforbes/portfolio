@@ -12,7 +12,7 @@ SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 class GoogleCalendarClient:
     def __init__(self):
         self.creds = None
-        self.token_path = "config/token.pickle"
+        self.token_path = "config/calendar_token.pickle"
         self.secret_file = os.getenv("GOOGLE_CLIENT_SECRET")
 
         # Load existing token if it exists
@@ -37,11 +37,11 @@ class GoogleCalendarClient:
         # Build Calendar service
         self.service = build("calendar", "v3", credentials=self.creds)
 
-    def get_upcoming_events(self, max_results=5):
+    def get_upcoming_events(self, max_results=5, calendar_id="primary"):
         events_result = (
             self.service.events()
             .list(
-                calendarId="primary",
+                calendarId=calendar_id,
                 maxResults=max_results,
                 singleEvents=True,
                 orderBy="startTime",

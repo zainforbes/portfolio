@@ -46,3 +46,17 @@ class GmailClient:
             .execute()
         )
         return results.get("messages", [])
+    
+    def get_message_details(self, message_id: str):
+        """Fetch subject + snippet for a single Gmail message."""
+        msg = self.service.users().messages().get(
+            userId="me",
+            id=message_id,
+            format="metadata",
+            metadataHeaders=["Subject"]
+        ).execute()
+
+        headers = msg.get("payload", {}).get("headers", [])
+        subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No subject")
+        snippet = msg.get("snippet", "")
+        return f"📧 {subject} → {snippet[:80]}..."
