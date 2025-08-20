@@ -1,5 +1,5 @@
 from langgraph.graph import StateGraph
-from src.core.state import AssistantState
+from src.core.state_schema import AssistantState
 from src.core.llm_client import GeminiClient
 
 gemini = GeminiClient()
@@ -36,8 +36,10 @@ def agent_router(state: AssistantState) -> AssistantState:
     return state
 
 
-def response_node(state: AssistantState) -> str:
-    return f"Route: {state.route}\nResult: {state.result}"
+def response_node(state: AssistantState) -> AssistantState:
+    state.result = f"Route: {state.route}\nResult: {state.result}"
+    return state
+
 
 
 # --- Build Graph ---
