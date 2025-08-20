@@ -54,6 +54,9 @@ credentials.json
 *.key
 *.crt
 
+# Google API tokens
+config/*.pickle
+
 # =========================
 # Tests
 # =========================
