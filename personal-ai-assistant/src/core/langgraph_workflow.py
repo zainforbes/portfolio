@@ -50,32 +50,26 @@ except Exception:
 
 # To help fuzzy cases where LLM might get confused with tasks
 SYN_TO_INTERNAL = {
-    "email": "gmail",
-    "mail": "gmail",
-    "gmail": "gmail",
-    "calendar": "calendar",
-    "cal": "calendar",
-    "schedule": "calendar",
-    "search": "search",
-    "research": "search",
-    "task": "task",
-    "prioritize": "task",
-    "priority": "task",
+    "email": "gmail", "mail": "gmail", "gmail": "gmail",
+    "calendar": "calendar", "cal": "calendar", "schedule": "calendar",
+    "search": "search", "research": "search",
+    "task": "task", "prioritize": "task", "priority": "task", "todo": "task",
 }
 
 def _normalize_route(route: str) -> str:
     r = (route or "").strip().lower()
     return SYN_TO_INTERNAL.get(r, r)
 
+
 def _keyword_route(text: str) -> str | None:
     t = (text or "").lower()
-    # cheap keyword routing (deterministic)
     patterns = [
         (r"\b(gmail|email|inbox|mail|message|messages)\b", "gmail"),
         (r"\b(calendar|cal|schedule|event|events|meeting|meetings|today|tomorrow)\b", "calendar"),
         (r"\b(search|research|find|lookup|news)\b", "search"),
         (r"\b(task|prioriti[sz]e|priority|todo|to-do)\b", "task"),
     ]
+    import re
     for pat, route in patterns:
         if re.search(pat, t):
             return route
@@ -109,7 +103,6 @@ def _parse_json_block(txt: str):
 
 # ---------- Nodes ----------
 def request_classifier(state: AssistantState) -> AssistantState:
-    # 1) Deterministic keyword override
     kr = _keyword_route(state.user_input)
     if kr:
         state.route = kr
