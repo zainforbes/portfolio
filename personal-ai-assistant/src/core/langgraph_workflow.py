@@ -302,6 +302,76 @@ def response_node(state: AssistantState) -> AssistantState:
     return state
 
 
+def verifier_node(state: AssistantState) -> AssistantState:
+    """
+    Light hallucination/quality check with a single-pass, low-cost self-review.
+    - For 'search': check relevance & duplicates, optionally refine.
+    - For 'task': ensure it's a list, sorted; nudge formatting.
+    - For 'gmail'/'calendar': ensure non-empty, otherwise suggest fallback.
+    Produces verify_score (0..1) and verify_notes.
+    """
+    try:
+        route = (state.route or "").lower()
+        payload = state.result
+
+        # Build a compact verification prompt
+        prompt = f"""
+You are a verification agent. Examine the ROUTE and PAYLOAD and return STRICT JSON ONLY:
+{{
+  "score": 0.0,              // 0..1 overall quality
+  "notes": ["issue or ok"],  // bullets
+  "corrected": null          // optional corrected payload with the same type/shape; otherwise null
+}}
+
+Rules:
+- For "search": check on-topic relevance to "{state.user_input}", remove duplicates/near-duplicates, keep 3–5 best.
+- For "task": ensure it's a ranked list; no boilerplate; keep concise items.
+- For "gmail"/"calendar": ensure non-empty; if empty, note fallback.
+- Do NOT invent new, external facts. Only reformat or filter.
+
+ROUTE: {route}
+PAYLOAD:
+{json.dumps(payload, ensure_ascii=False) if not isinstance(payload, str) else payload}
+"""
+
+        raw = gemini.chat(prompt)
+        parsed = _parse_json_block(raw) or {"score": 0.6, "notes": ["fallback parse"], "corrected": None}
+
+        state.verify_score = float(parsed.get("score", 0.6))
+        notes = parsed.get("notes") or []
+        if isinstance(notes, list):
+            state.verify_notes = [str(n) for n in notes][:6]
+        else:
+            state.verify_notes = [str(notes)]
+
+        corrected = parsed.get("corrected")
+        # If the verifier produced a same-shape correction, adopt it.
+        if corrected is not None:
+            # Keep simple: accept corrected for 'search' and 'task' if it's a list
+            if route in ("search", "task") and isinstance(corrected, list):
+                state.logs.append("verifier: adopted corrected payload")
+                state.result = corrected
+
+        # Optional: if search quality low, try one refinement (delegate back to search)
+        if route == "search" and state.verify_score < 0.5:
+            state.logs.append(f"verifier: low search quality ({state.verify_score:.2f}) → refine query")
+            state.user_input = f"Refine and narrow this query for higher relevance: {state.user_input}"
+            state.delegate = "search"
+
+        # Optional: if task quality low, force a minimal cleanup
+        if route == "task" and isinstance(state.result, list):
+            cleaned = [str(x).strip() for x in state.result if str(x).strip()]
+            if cleaned and cleaned != state.result:
+                state.logs.append("verifier: cleaned task list formatting")
+                state.result = cleaned
+
+    except Exception as e:
+        state.logs.append(f"verifier error: {e}")
+
+    return state
+
+
+
 # ---------- Build & compile graph ----------
 graph = StateGraph(AssistantState)
 
@@ -310,11 +380,13 @@ graph.add_node("conf_gate", confidence_gate)
 graph.add_node("router", agent_router)
 graph.add_node("delegate", delegate_router)
 graph.add_node("responder", response_node)
+graph.add_node("verifier", verifier_node)
 
 graph.set_entry_point("classifier")
 graph.add_edge("classifier", "conf_gate")
 graph.add_edge("conf_gate", "router")
 graph.add_edge("router", "delegate")
-graph.add_edge("delegate", "responder")
+graph.add_edge("delegate", "verifier")
+graph.add_edge("verifier", "responder")
 
 app = graph.compile()
