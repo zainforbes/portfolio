@@ -65,14 +65,23 @@ def agent_router(state: AssistantState) -> AssistantState:
             state.result = [f"🔎 {r['title']} ({r['url']})" for r in results]
 
     elif state.route == "task":
-        # Example: user asks "Prioritize my tasks"
-        tasks = [
-            "Reply to manager’s email",
-            "Prepare slides for tomorrow’s meeting",
-            "Doctor appointment at 10 AM",
-            "Research LangGraph for project"
-        ]
-        state.result = task_prioritizer.prioritize(tasks)
+        # Pull tasks dynamically from Gmail + Calendar
+        gmail_msgs = gmail_client.list_messages(3)
+        gmail_tasks = []
+        if gmail_msgs:
+            gmail_tasks = [gmail_client.get_message_details(m["id"]) for m in gmail_msgs]
+
+        calendar_events = calendar_client.get_upcoming_events(3, calendar_id="63f355d9a81d3da369dded9a7d41228d03209a7b8b2575dc37315889ab54a708@group.calendar.google.com")
+        calendar_tasks = []
+        if calendar_events:
+            calendar_tasks = [e.get("summary", "Unnamed event") for e in calendar_events]
+
+        tasks = gmail_tasks + calendar_tasks
+
+        if not tasks:
+            state.result = "No tasks found in Gmail or Calendar."
+        else:
+            state.result = task_prioritizer.prioritize(tasks)
 
     else:
         state.result = "❌ Sorry, I don’t understand your request."
