@@ -10,9 +10,14 @@ class AssistantState(BaseModel):
     delegate: Optional[str] = None
     error: Optional[str] = None
     logs: List[str] = []
-    verify_score: float = 0.0           # 0..1 quality score from verifier
-    verify_notes: List[str] = []        # quick notes on issues / fixes
 
-        # NEW: simple memory
+    # verification
+    verify_score: float = 0.0
+    verify_notes: List[str] = []
+
+    # (optional) error code for UI/tests
+    error_code: Optional[str] = None
+
+    # simple memory
     history: List[Tuple[str, str]] = []
     memory_summary: str = ""

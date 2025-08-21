@@ -10,8 +10,24 @@ cases = [
 
 for q in cases:
     out = app.invoke(AssistantState(user_input=q))
-    print("\nQ:", q)
-    print("route:", out["route"], "conf:", out.get("route_confidence"))
-    print("verify_score:", out.get("verify_score"))
-    print("notes:", out.get("verify_notes"))
-    print("result:", out.get("result")[:3] if isinstance(out.get("result"), list) else out.get("result"))
+    print(f"\nQ: {q}")
+    # Access all properties as dict keys
+    print("route:", out["route"], "conf:", out["route_confidence"])
+    print("verify_score:", out["verify_score"])
+    print("notes:", out["verify_notes"])
+    # Safely print result preview
+    result = out["result"]
+    preview = result[:3] if isinstance(result, list) else result
+    print("result:", preview)
+    
+    # Print metrics if available in context
+    context = out.get("context", {})
+    if "metrics" in context and isinstance(context["metrics"], dict):
+        metrics = {k: v for k, v in context["metrics"].items() if isinstance(v, (int, float))}
+        print("metrics:", metrics)
+    
+    # Print any errors
+    error = out.get("error")
+    if error:
+        print("error:", error)
+        print("error_code:", out.get("error_code"))

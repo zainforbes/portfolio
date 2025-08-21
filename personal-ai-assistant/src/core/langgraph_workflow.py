@@ -1,8 +1,7 @@
 import json
 import re
+import time
 from typing import Any, Dict, List
-from src.utils.llm_cache import get as llm_cache_get, set_ as llm_cache_set
-
 
 from langgraph.graph import StateGraph
 from googleapiclient.errors import HttpError
@@ -13,40 +12,38 @@ from src.agents.gmail_client import GmailClient
 from src.agents.calendar_client import GoogleCalendarClient
 from src.agents.brave_client import BraveSearchClient
 from src.agents.task_prioritizer import TaskPrioritizer
+from src.utils import disk_cache
+from src.utils.metrics import time_call, mark
 
-# Optional helpers (retry + micro-cache)
-try:
-    from utils.utils_retry import retry
-except Exception:
-    # Fallback minimal retry if helper not present
-    def retry(fn, retries: int = 2, backoff: float = 0.6, exceptions=(Exception,)):
-        import time
-        def wrapped(*args, **kwargs):
-            attempt, delay = 0, backoff
-            while True:
-                try:
-                    return fn(*args, **kwargs)
-                except exceptions:  # type: ignore
-                    attempt += 1
-                    if attempt > retries:
-                        raise
-                    time.sleep(delay)
-                    delay *= 2
-        return wrapped
-
-try:
-    from utils.utils_cache import cache_get, cache_set
-except Exception:
-    _CACHE: Dict[str, Any] = {}
+# Retry helper
+def retry(fn, retries: int = 2, backoff: float = 0.6, exceptions=(Exception,)):
     import time
-    def cache_get(key: str, ttl: int = 60):
-        v = _CACHE.get(key)
-        if not v:
-            return None
-        val, exp = v
-        return val if exp > time.time() else None
-    def cache_set(key: str, val: Any, ttl: int = 60):
-        _CACHE[key] = (val, time.time() + ttl)  # type: ignore
+    def wrapped(*args, **kwargs):
+        attempt, delay = 0, backoff
+        while True:
+            try:
+                return fn(*args, **kwargs)
+            except exceptions:  # type: ignore
+                attempt += 1
+                if attempt > retries:
+                    raise
+                time.sleep(delay)
+                delay *= 2
+    return wrapped
+
+# Memory cache for short-term caching within session
+_MEMORY_CACHE: Dict[str, Any] = {}
+import time
+
+def memory_cache_get(key: str, ttl: int = 60):
+    v = _MEMORY_CACHE.get(key)
+    if not v:
+        return None
+    val, exp = v
+    return val if exp > time.time() else None
+
+def memory_cache_set(key: str, val: Any, ttl: int = 60):
+    _MEMORY_CACHE[key] = (val, time.time() + ttl)
 
 # ---------- Routing config ----------
 ROUTES = ["gmail", "calendar", "search", "task"]
@@ -123,10 +120,11 @@ def _parse_json_block(txt: str):
 
 # ---------- Nodes ----------
 def request_classifier(state: AssistantState) -> AssistantState:
-
-     # SAFE FLAG: skip re-classification if we've already classified in this run
+    # Skip re-classification if we've already classified in this run
     if state.context.get("_classified"):
         return state
+    
+    mark(state, "classifier_start", time.time())
     
     # 1) deterministic keyword routing
     kr = _keyword_route(state.user_input)
@@ -134,10 +132,11 @@ def request_classifier(state: AssistantState) -> AssistantState:
         state.route = kr
         state.route_confidence = 1.0
         state.logs.append(f"classifier (keyword) → route={kr} conf=1.00")
-        state.context["_classified"] = True   # <-- SET FLAG HERE
+        state.context["_classified"] = True
+        mark(state, "classifier_method", "keyword")
         return state
 
-    # 2) fallback to LLM JSON
+    # 2) fallback to LLM JSON with disk caching
     prompt = f"""
 Classify the request into one of: {ROUTES}.
 Return STRICT JSON ONLY:
@@ -151,20 +150,39 @@ Examples:
 
 Request: {state.user_input}
 """
-    raw = llm_cache_get(prompt) or gemini.chat(prompt)
-    if llm_cache_get(prompt) is None:
-        llm_cache_set(prompt, raw)
-    parsed = _parse_json_block(raw) or {"route": "search", "confidence": 0.5}
-    route = _normalize_route(parsed.get("route", "search"))
-    conf = float(parsed.get("confidence", 0.5))
-    if route not in ROUTES:
-        route, conf = "search", 0.5
+    
+    try:
+        raw = time_call(state, "llm_classify_ms", 
+                       lambda: disk_cache.get(prompt) or gemini.chat(prompt))
+        if disk_cache.get(prompt) is None:
+            disk_cache.set(prompt, raw)
+            mark(state, "classifier_cached", False)
+        else:
+            mark(state, "classifier_cached", True)
+            
+        parsed = _parse_json_block(raw) or {"route": "search", "confidence": 0.5}
+        route = _normalize_route(parsed.get("route", "search"))
+        conf = float(parsed.get("confidence", 0.5))
+        
+        if route not in ROUTES:
+            route, conf = "search", 0.5
+            state.logs.append("classifier: invalid route from LLM, fallback to search")
 
-    state.route = route
-    state.route_confidence = conf
-    state.logs.append(f"classifier → route={route} conf={conf:.2f}")
+        state.route = route
+        state.route_confidence = conf
+        state.logs.append(f"classifier → route={route} conf={conf:.2f}")
+        mark(state, "classifier_method", "llm")
+        
+    except Exception as e:
+        state.error = f"Classification error: {e}"
+        state.error_code = "CLASSIFY_ERROR"
+        state.logs.append(state.error)
+        # Fallback to search on error
+        state.route = "search"
+        state.route_confidence = 0.3
+        mark(state, "classifier_method", "error_fallback")
 
-    state.context["_classified"] = True #Flag
+    state.context["_classified"] = True
     return state
 
 def confidence_gate(state: AssistantState) -> AssistantState:
@@ -178,56 +196,65 @@ def confidence_gate(state: AssistantState) -> AssistantState:
 
 
 @retry
-def _safe_calendar_fetch(max_results: int, calendar_id: str):
-    return calendar_client.get_upcoming_events(max_results, calendar_id)
-
-
-@retry
-def _safe_gmail_list(max_results: int):
-    return gmail_client.list_messages(max_results)
-
+def _safe_calendar_fetch(state: AssistantState, max_results: int, calendar_id: str):
+    return time_call(state, "calendar_fetch_ms", 
+                    calendar_client.get_upcoming_events, max_results, calendar_id)
 
 @retry
-def _safe_brave_search(q: str, n: int):
+def _safe_gmail_list(state: AssistantState, max_results: int):
+    return time_call(state, "gmail_list_ms", 
+                    gmail_client.list_messages, max_results)
+
+@retry
+def _safe_brave_search(state: AssistantState, q: str, n: int):
     key = f"brave::{q}::{n}"
-    cached = cache_get(key, ttl=120)
+    cached = memory_cache_get(key, ttl=120)
     if cached is not None:
+        mark(state, "search_cached", True)
         return cached
-    res = brave_client.search(q, n)
-    cache_set(key, res, ttl=120)
+    
+    mark(state, "search_cached", False)
+    res = time_call(state, "brave_search_ms", brave_client.search, q, n)
+    memory_cache_set(key, res, ttl=120)
     return res
 
 
 def agent_router(state: AssistantState) -> AssistantState:
+    mark(state, f"{state.route}_agent_start", time.time())
+    
     try:
         if state.route == "gmail":
-            messages = _safe_gmail_list(5)
+            messages = _safe_gmail_list(state, 5)
             if not messages:
                 state.result = "No Gmail messages found."
+                mark(state, "gmail_message_count", 0)
                 return state
+            
+            mark(state, "gmail_message_count", len(messages))
             
             # Process Gmail messages for display
             if hasattr(gmail_client, "get_message_details"):
-                details = [gmail_client.get_message_details(m["id"]) for m in messages]
+                details = time_call(state, "gmail_details_ms", 
+                                  lambda: [gmail_client.get_message_details(m["id"]) for m in messages])
                 state.result = details
                 
                 # Extract subjects for potential task prioritization
                 subjects = []
-                for m in messages:
+                for i, m in enumerate(messages):
                     try:
                         meta = gmail_client.service.users().messages().get(
                             userId="me", id=m["id"], format="metadata", metadataHeaders=["Subject"]
                         ).execute()
                         hdrs = meta.get("payload", {}).get("headers", [])
-                        subj = next((h["value"] for h in hdrs if h["name"] == "Subject"), "Email")
+                        subj = next((h["value"] for h in hdrs if h["name"] == "Subject"), f"Email {i+1}")
                         subjects.append(subj)
-                    except Exception:
-                        subjects.append("Email")
+                    except Exception as e:
+                        subjects.append(f"Email {i+1}")
+                        state.logs.append(f"Failed to get subject for message {i+1}: {e}")
                 
                 state.context["gmail_tasks"] = subjects
                 
                 # Only delegate to task if user explicitly wants prioritization
-                # Check if the original request was about prioritization
                 if any(word in state.user_input.lower() for word in ["prioritize", "priority", "task", "important"]):
                     state.delegate = "task"
                     state.logs.append("gmail → delegating to task for prioritization")
@@ -239,11 +266,14 @@ def agent_router(state: AssistantState) -> AssistantState:
                 state.context["gmail_tasks"] = [f"Email {i+1}" for i in range(len(ids))]
 
         elif state.route == "calendar":
-            events = _safe_calendar_fetch(5, calendar_id="primary")
+            events = _safe_calendar_fetch(state, 5, calendar_id="primary")
             if not events:
                 state.result = "No upcoming calendar events."
+                mark(state, "calendar_event_count", 0)
                 return state
-                
+            
+            mark(state, "calendar_event_count", len(events))
+            
             state.result = [
                 "📅 "
                 + (e["start"].get("dateTime", e["start"].get("date", "")))
@@ -259,14 +289,19 @@ def agent_router(state: AssistantState) -> AssistantState:
                 state.logs.append("calendar → delegating to task for prioritization")
 
         elif state.route == "search":
-            results = _safe_brave_search(state.user_input, 3)
-            state.result = (
-                [f"🔎 {r['title']} ({r['url']})" for r in results]
-                if results else "No search results found."
-            )
+            # Use refined query if available from verifier
+            query = state.context.get("refined_query", state.user_input)
+            results = _safe_brave_search(state, query, 3)
+            
+            if results:
+                state.result = [f"🔎 {r['title']} ({r['url']})" for r in results]
+                mark(state, "search_result_count", len(results))
+            else:
+                state.result = "No search results found."
+                mark(state, "search_result_count", 0)
         
         elif state.route == "task":
-            # Build tasks from context (gmail + calendar); if empty, enrich from calendar
+            # Build tasks from context (gmail + calendar); if empty, enrich from available sources
             gmail_tasks = state.context.get("gmail_tasks", [])
             cal_tasks = state.context.get("calendar_tasks", [])
 
@@ -274,25 +309,25 @@ def agent_router(state: AssistantState) -> AssistantState:
             if not gmail_tasks and not cal_tasks:
                 try:
                     # Try to get calendar events for task prioritization
-                    events = _safe_calendar_fetch(3, calendar_id="primary")
+                    events = _safe_calendar_fetch(state, 3, calendar_id="primary")
                     if events:
                         cal_tasks = [e.get("summary", "Event") for e in events]
                         state.context["calendar_tasks"] = cal_tasks
                     
                     # Try to get Gmail messages for task prioritization  
-                    messages = _safe_gmail_list(3)
+                    messages = _safe_gmail_list(state, 3)
                     if messages:
                         gmail_subjects = []
-                        for m in messages:
+                        for i, m in enumerate(messages):
                             try:
                                 meta = gmail_client.service.users().messages().get(
                                     userId="me", id=m["id"], format="metadata", metadataHeaders=["Subject"]
                                 ).execute()
                                 hdrs = meta.get("payload", {}).get("headers", [])
-                                subj = next((h["value"] for h in hdrs if h["name"] == "Subject"), "Email")
+                                subj = next((h["value"] for h in hdrs if h["name"] == "Subject"), f"Email {i+1}")
                                 gmail_subjects.append(subj)
                             except Exception:
-                                gmail_subjects.append("Email")
+                                gmail_subjects.append(f"Email {i+1}")
                         state.context["gmail_tasks"] = gmail_subjects
                         gmail_tasks = gmail_subjects
                         
@@ -300,13 +335,15 @@ def agent_router(state: AssistantState) -> AssistantState:
                     state.logs.append(f"task gathering failed: {e}")
 
             combined = [t for t in (gmail_tasks + cal_tasks) if isinstance(t, str) and t.strip()]
+            mark(state, "task_input_count", len(combined))
+            
             if not combined:
                 state.result = "No tasks found in Gmail or Calendar to prioritize."
                 return state
 
             # Call prioritizer and accept either list OR dict
             try:
-                res = task_prioritizer.prioritize(combined)
+                res = time_call(state, "task_prioritize_ms", task_prioritizer.prioritize, combined)
 
                 # If prioritizer returns a dict (with scoring)
                 if isinstance(res, dict):
@@ -325,25 +362,34 @@ def agent_router(state: AssistantState) -> AssistantState:
                     state.logs.append(f"task prioritizer returned unsupported type: {type(res)}")
                     state.result = combined
 
+                mark(state, "task_output_count", len(state.result) if isinstance(state.result, list) else 0)
                 state.logs.append(f"task prioritized {len(state.result) if isinstance(state.result, list) else 'n/a'} items")
+                
             except Exception as e:
-                state.logs.append(f"task prioritization failed: {e}")
+                state.error = f"Task prioritization failed: {e}"
+                state.error_code = "TASK_ERROR"
+                state.logs.append(state.error)
                 state.result = combined
 
         else:
             state.result = "❌ Sorry, I don't understand your request."
+            state.error_code = "UNKNOWN_ROUTE"
 
         return state
 
     except HttpError as e:
         state.error = f"Google API error: {getattr(e, 'status_code', '')} {e}"
+        state.error_code = "GOOGLE_API_ERROR"
         state.logs.append(state.error)
         state.result = "⚠️ Google API error. Try again shortly."
+        mark(state, f"{state.route}_error", True)
         return state
     except Exception as e:
         state.error = f"Agent error: {e}"
+        state.error_code = "AGENT_ERROR"
         state.logs.append(state.error)
         state.result = "⚠️ Something went wrong while processing your request."
+        mark(state, f"{state.route}_error", True)
         return state
 
 
@@ -352,6 +398,7 @@ def delegate_router(state: AssistantState) -> AssistantState:
     if state.delegate:
         target = state.delegate
         state.logs.append(f"delegating from {state.route} to {target}")
+        mark(state, f"delegated_to_{target}", True)
         state.route = target
         state.delegate = None  # prevent loops
         
@@ -366,9 +413,9 @@ def response_node(state: AssistantState) -> AssistantState:
 
 
 def verifier_node(state: AssistantState) -> AssistantState:
-    """
-    Light hallucination/quality check with a single-pass, low-cost self-review.
-    """
+    """Light hallucination/quality check with disk caching."""
+    mark(state, "verifier_start", time.time())
+    
     try:
         route = (state.route or "").lower()
         payload = state.result
@@ -379,7 +426,8 @@ You are a verification agent. Examine the ROUTE and PAYLOAD and return STRICT JS
 {{
   "score": 0.0,              // 0..1 overall quality
   "notes": ["issue or ok"],  // bullets
-  "corrected": null          // optional corrected payload with the same type/shape; otherwise null
+  "corrected": null,         // optional corrected payload with the same type/shape; otherwise null
+  "refined_query": null      // for search: improved query string if quality is low
 }}
 
 Rules:
@@ -393,9 +441,14 @@ PAYLOAD:
 {json.dumps(payload, ensure_ascii=False) if not isinstance(payload, str) else payload}
 """
 
-        raw = llm_cache_get(prompt) or gemini.chat(prompt)
-        if llm_cache_get(prompt) is None:
-            llm_cache_set(prompt, raw)
+        raw = time_call(state, "verifier_llm_ms", 
+                       lambda: disk_cache.get(prompt) or gemini.chat(prompt))
+        if disk_cache.get(prompt) is None:
+            disk_cache.set(prompt, raw)
+            mark(state, "verifier_cached", False)
+        else:
+            mark(state, "verifier_cached", True)
+            
         parsed = _parse_json_block(raw) or {"score": 0.6, "notes": ["fallback parse"], "corrected": None}
 
         state.verify_score = float(parsed.get("score", 0.6))
@@ -412,14 +465,18 @@ PAYLOAD:
             if route in ("search", "task") and isinstance(corrected, list):
                 state.logs.append("verifier: adopted corrected payload")
                 state.result = corrected
+                mark(state, "verifier_corrected", True)
 
-        # SAFE FLAG: only refine search once per run
-        if route == "search" and state.verify_score < 0.5 and not state.context.get("_search_refined"):
+        # Safe flag: only refine search once per run
+        if (route == "search" and state.verify_score < 0.5 and 
+            not state.context.get("_search_refined")):
             rq = parsed.get("refined_query")
             if isinstance(rq, str) and rq.strip():
                 state.context["refined_query"] = rq.strip()
-            state.context["_search_refined"] = True   # <-- SET FLAG HERE
+                state.logs.append(f"verifier: refined query to '{rq.strip()}'")
+            state.context["_search_refined"] = True
             state.delegate = "search"
+            mark(state, "verifier_search_refined", True)
             state.logs.append(f"verifier: low search quality ({state.verify_score:.2f}) → refine & re-run search")
 
         # Optional: if task quality low, force a minimal cleanup
@@ -428,9 +485,18 @@ PAYLOAD:
             if cleaned and cleaned != state.result:
                 state.logs.append("verifier: cleaned task list formatting")
                 state.result = cleaned
+                mark(state, "verifier_task_cleaned", True)
 
     except Exception as e:
-        state.logs.append(f"verifier error: {e}")
+        state.error = f"Verifier error: {e}"
+        state.error_code = "VERIFIER_ERROR"
+        state.logs.append(state.error)
+        # Set default values on error
+        state.verify_score = 0.5
+        state.verify_notes = ["Verification failed"]
+
+    return state
+
 
 MAX_TURNS = 6  # summarize when we exceed this
 
@@ -445,30 +511,40 @@ CURRENT SUMMARY:
 NEW TURNS (user → assistant):
 {turns}
 """
-    # Use the cache too
-    cached = llm_cache_get(prompt)
+    # Use disk cache for memory summaries too
+    cached = disk_cache.get(prompt)
     if cached is None:
         out = gemini.chat(prompt).strip()
-        llm_cache_set(prompt, out)
+        disk_cache.set(prompt, out)
         return out
     return cached.strip()
 
 def memory_node(state: AssistantState) -> AssistantState:
-    # append this turn
+    """Lightweight conversation memory with metrics."""
+    mark(state, "memory_start", time.time())
+    
+    # Append this turn
     state.history.append((state.user_input, str(state.result)))
+    mark(state, "memory_turn_count", len(state.history))
 
-    # summarize when too long
+    # Summarize when too long
     if len(state.history) > MAX_TURNS:
         chunk = state.history[-MAX_TURNS:]
-        # compact printable block
-        block = "\n".join([f"U: {u}\nA: {a}" for (u,a) in chunk])
-        state.memory_summary = _summarize_turns(block, state.memory_summary)
-        # keep only the last 2 turns after summarizing
+        # Compact printable block
+        block = "\n".join([f"U: {u}\nA: {a}" for (u, a) in chunk])
+        
+        state.memory_summary = time_call(state, "memory_summary_ms", 
+                                       _summarize_turns, block, state.memory_summary)
+        
+        # Keep only the last 2 turns after summarizing
         state.history = state.history[-2:]
         state.logs.append("memory: summarized history to keep context small")
-
+        mark(state, "memory_summarized", True)
+    else:
+        mark(state, "memory_summarized", False)
 
     return state
+
 
 # ---------- Build & compile graph ----------
 graph = StateGraph(AssistantState)
@@ -504,6 +580,6 @@ graph.add_conditional_edges(
 )
 
 graph.add_edge("verifier", "responder")
-graph.add_edge("responder", "memory") # Lightweight conversation memory
+graph.add_edge("responder", "memory")
 
 app = graph.compile()

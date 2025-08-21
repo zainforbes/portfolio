@@ -65,6 +65,7 @@ htmlcov/
 .cache/
 pytest_cache/
 junit.xml
+llm_cache.json
 
 # =========================
 # MCP / LangGraph artifacts
