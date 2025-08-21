@@ -50,12 +50,12 @@ except Exception:
 ROUTES = ["gmail", "calendar", "search", "task"]
 CONFIDENCE_THRESHOLD = 0.6
 
-# To help fuzzy cases where LLM might get confused with tasks
+# More precise synonym mapping to avoid conflicts
 SYN_TO_INTERNAL = {
-    "email": "gmail", "mail": "gmail", "gmail": "gmail",
-    "calendar": "calendar", "cal": "calendar", "schedule": "calendar",
-    "search": "search", "research": "search",
-    "task": "task", "prioritize": "task", "priority": "task", "todo": "task",
+    "email": "gmail", "mail": "gmail", "gmail": "gmail", "inbox": "gmail", "message": "gmail", "messages": "gmail",
+    "calendar": "calendar", "cal": "calendar", "schedule": "calendar", "event": "calendar", "events": "calendar", "meeting": "calendar", "meetings": "calendar",
+    "search": "search", "research": "search", "find": "search", "lookup": "search", "news": "search",
+    "task": "task", "prioritize": "task", "priority": "task", "todo": "task", "to-do": "task",
 }
 
 def _normalize_route(route: str) -> str:
@@ -64,17 +64,37 @@ def _normalize_route(route: str) -> str:
 
 
 def _keyword_route(text: str) -> str | None:
+    """More precise keyword routing with priority order to avoid conflicts"""
     t = (text or "").lower()
+    
+    # Priority order: most specific patterns first
     patterns = [
-        (r"\b(gmail|email|inbox|mail|message|messages)\b", "gmail"),
-        (r"\b(calendar|cal|schedule|event|events|meeting|meetings|today|tomorrow)\b", "calendar"),
-        (r"\b(search|research|find|lookup|news)\b", "search"),
-        (r"\b(task|prioriti[sz]e|priority|todo|to-do)\b", "task"),
+        # Gmail patterns - be very specific
+        (r"\b(gmail|inbox|latest.*mail|check.*mail|email.*messages|mail.*messages)\b", "gmail"),
+        # Calendar patterns - specific to calendar/scheduling
+        (r"\b(calendar|upcoming.*event|calendar.*event|schedule|meeting|today.*event|tomorrow.*event)\b", "calendar"),
+        # Task patterns - specifically about prioritization/tasks
+        (r"\b(prioriti[sz]e.*task|task.*priorit|todo|to-do|task.*list)\b", "task"),
+        # Search patterns - general search/research
+        (r"\b(search.*for|research|find.*information|lookup|news)\b", "search"),
     ]
 
     for pat, route in patterns:
         if re.search(pat, t):
             return route
+    
+    # Fallback for broader patterns if no specific match
+    broader_patterns = [
+        (r"\bemail\b", "gmail"),
+        (r"\bcalendar\b", "calendar"),
+        (r"\btask\b", "task"),
+        (r"\bsearch\b", "search"),
+    ]
+    
+    for pat, route in broader_patterns:
+        if re.search(pat, t):
+            return route
+            
     return None
 
 
@@ -101,12 +121,18 @@ def _parse_json_block(txt: str):
 
 # ---------- Nodes ----------
 def request_classifier(state: AssistantState) -> AssistantState:
+
+     # SAFE FLAG: skip re-classification if we've already classified in this run
+    if state.context.get("_classified"):
+        return state
+    
     # 1) deterministic keyword routing
     kr = _keyword_route(state.user_input)
     if kr:
         state.route = kr
         state.route_confidence = 1.0
         state.logs.append(f"classifier (keyword) → route={kr} conf=1.00")
+        state.context["_classified"] = True   # <-- SET FLAG HERE
         return state
 
     # 2) fallback to LLM JSON
@@ -114,6 +140,12 @@ def request_classifier(state: AssistantState) -> AssistantState:
 Classify the request into one of: {ROUTES}.
 Return STRICT JSON ONLY:
 {{"route":"<one of {ROUTES}>","confidence":0.0}}
+
+Examples:
+- "Check my latest Gmail messages" → {{"route":"gmail","confidence":0.9}}
+- "What are my upcoming calendar events?" → {{"route":"calendar","confidence":0.9}}
+- "Prioritize my tasks" → {{"route":"task","confidence":0.9}}
+- "Search for LangGraph patterns" → {{"route":"search","confidence":0.9}}
 
 Request: {state.user_input}
 """
@@ -127,6 +159,8 @@ Request: {state.user_input}
     state.route = route
     state.route_confidence = conf
     state.logs.append(f"classifier → route={route} conf={conf:.2f}")
+
+    state.context["_classified"] = True #Flag
     return state
 
 def confidence_gate(state: AssistantState) -> AssistantState:
@@ -166,49 +200,59 @@ def agent_router(state: AssistantState) -> AssistantState:
             messages = _safe_gmail_list(5)
             if not messages:
                 state.result = "No Gmail messages found."
-            else:
-                # ── Put your snippet right here ─────────────────────────
-                if hasattr(gmail_client, "get_message_details"):
-                    # keep previews for display
-                    details = [gmail_client.get_message_details(m["id"]) for m in messages]
-                    state.result = details
-
-                    # but feed SUBJECT-ONLY into the Task Prioritizer
-                    subjects = []
-                    for m in messages:
+                return state
+            
+            # Process Gmail messages for display
+            if hasattr(gmail_client, "get_message_details"):
+                details = [gmail_client.get_message_details(m["id"]) for m in messages]
+                state.result = details
+                
+                # Extract subjects for potential task prioritization
+                subjects = []
+                for m in messages:
+                    try:
                         meta = gmail_client.service.users().messages().get(
                             userId="me", id=m["id"], format="metadata", metadataHeaders=["Subject"]
                         ).execute()
                         hdrs = meta.get("payload", {}).get("headers", [])
                         subj = next((h["value"] for h in hdrs if h["name"] == "Subject"), "Email")
                         subjects.append(subj)
-
-                    state.context["gmail_tasks"] = subjects
-                else:
-                    # fallback if you didn't add get_message_details()
-                    ids = [m["id"] for m in messages]
-                    state.result = ids
-                    state.context["gmail_tasks"] = ids
-
-                # Optional: trigger delegation to the Task agent
-                if state.context.get("gmail_tasks"):
+                    except Exception:
+                        subjects.append("Email")
+                
+                state.context["gmail_tasks"] = subjects
+                
+                # Only delegate to task if user explicitly wants prioritization
+                # Check if the original request was about prioritization
+                if any(word in state.user_input.lower() for word in ["prioritize", "priority", "task", "important"]):
                     state.delegate = "task"
-                    state.logs.append("gmail produced tasks → delegating to task")
+                    state.logs.append("gmail → delegating to task for prioritization")
+                    
+            else:
+                # Fallback if get_message_details not available
+                ids = [m["id"] for m in messages]
+                state.result = ids
+                state.context["gmail_tasks"] = [f"Email {i+1}" for i in range(len(ids))]
 
         elif state.route == "calendar":
-            # NOTE: still using 'primary' to stay focused on plan; user can swap ID later
             events = _safe_calendar_fetch(5, calendar_id="primary")
             if not events:
                 state.result = "No upcoming calendar events."
-            else:
-                state.result = [
-                    "📅 "
-                    + (e["start"].get("dateTime", e["start"].get("date", "")))
-                    + f" → {e.get('summary','No title')}"
-                    for e in events
-                ]
-                # Make summaries available to other agents
-                state.context["calendar_tasks"] = [e.get("summary", "Event") for e in events]
+                return state
+                
+            state.result = [
+                "📅 "
+                + (e["start"].get("dateTime", e["start"].get("date", "")))
+                + f" → {e.get('summary','No title')}"
+                for e in events
+            ]
+            # Make summaries available to other agents
+            state.context["calendar_tasks"] = [e.get("summary", "Event") for e in events]
+            
+            # Only delegate to task if user explicitly wants prioritization
+            if any(word in state.user_input.lower() for word in ["prioritize", "priority", "task", "important"]):
+                state.delegate = "task"
+                state.logs.append("calendar → delegating to task for prioritization")
 
         elif state.route == "search":
             results = _safe_brave_search(state.user_input, 3)
@@ -222,20 +266,41 @@ def agent_router(state: AssistantState) -> AssistantState:
             gmail_tasks = state.context.get("gmail_tasks", [])
             cal_tasks = state.context.get("calendar_tasks", [])
 
-            if not cal_tasks:
+            # If no tasks in context, try to gather from available sources
+            if not gmail_tasks and not cal_tasks:
                 try:
+                    # Try to get calendar events for task prioritization
                     events = _safe_calendar_fetch(3, calendar_id="primary")
-                    cal_tasks = [e.get("summary", "Event") for e in (events or [])]
-                    state.context["calendar_tasks"] = cal_tasks
-                except Exception:
-                    pass
+                    if events:
+                        cal_tasks = [e.get("summary", "Event") for e in events]
+                        state.context["calendar_tasks"] = cal_tasks
+                    
+                    # Try to get Gmail messages for task prioritization  
+                    messages = _safe_gmail_list(3)
+                    if messages:
+                        gmail_subjects = []
+                        for m in messages:
+                            try:
+                                meta = gmail_client.service.users().messages().get(
+                                    userId="me", id=m["id"], format="metadata", metadataHeaders=["Subject"]
+                                ).execute()
+                                hdrs = meta.get("payload", {}).get("headers", [])
+                                subj = next((h["value"] for h in hdrs if h["name"] == "Subject"), "Email")
+                                gmail_subjects.append(subj)
+                            except Exception:
+                                gmail_subjects.append("Email")
+                        state.context["gmail_tasks"] = gmail_subjects
+                        gmail_tasks = gmail_subjects
+                        
+                except Exception as e:
+                    state.logs.append(f"task gathering failed: {e}")
 
             combined = [t for t in (gmail_tasks + cal_tasks) if isinstance(t, str) and t.strip()]
             if not combined:
-                state.result = "No tasks found in Gmail or Calendar."
+                state.result = "No tasks found in Gmail or Calendar to prioritize."
                 return state
 
-            # ---- Call prioritizer and accept either list OR dict ----
+            # Call prioritizer and accept either list OR dict
             try:
                 res = task_prioritizer.prioritize(combined)
 
@@ -262,7 +327,7 @@ def agent_router(state: AssistantState) -> AssistantState:
                 state.result = combined
 
         else:
-            state.result = "❌ Sorry, I don’t understand your request."
+            state.result = "❌ Sorry, I don't understand your request."
 
         return state
 
@@ -278,13 +343,15 @@ def agent_router(state: AssistantState) -> AssistantState:
         return state
 
 
-# Bi-Directional Delegation
 def delegate_router(state: AssistantState) -> AssistantState:
-    """If an agent set a delegate, hand off and continue within the same run."""
+    """Enhanced delegation that properly handles the flow."""
     if state.delegate:
-        state.logs.append(f"delegating to {state.delegate}")
-        state.route = state.delegate
+        target = state.delegate
+        state.logs.append(f"delegating from {state.route} to {target}")
+        state.route = target
         state.delegate = None  # prevent loops
+        
+        # Process the delegated route
         return agent_router(state)
     return state
 
@@ -297,10 +364,6 @@ def response_node(state: AssistantState) -> AssistantState:
 def verifier_node(state: AssistantState) -> AssistantState:
     """
     Light hallucination/quality check with a single-pass, low-cost self-review.
-    - For 'search': check relevance & duplicates, optionally refine.
-    - For 'task': ensure it's a list, sorted; nudge formatting.
-    - For 'gmail'/'calendar': ensure non-empty, otherwise suggest fallback.
-    Produces verify_score (0..1) and verify_notes.
     """
     try:
         route = (state.route or "").lower()
@@ -344,11 +407,14 @@ PAYLOAD:
                 state.logs.append("verifier: adopted corrected payload")
                 state.result = corrected
 
-        # Optional: if search quality low, try one refinement (delegate back to search)
-        if route == "search" and state.verify_score < 0.5:
-            state.logs.append(f"verifier: low search quality ({state.verify_score:.2f}) → refine query")
-            state.user_input = f"Refine and narrow this query for higher relevance: {state.user_input}"
+        # SAFE FLAG: only refine search once per run
+        if route == "search" and state.verify_score < 0.5 and not state.context.get("_search_refined"):
+            rq = parsed.get("refined_query")
+            if isinstance(rq, str) and rq.strip():
+                state.context["refined_query"] = rq.strip()
+            state.context["_search_refined"] = True   # <-- SET FLAG HERE
             state.delegate = "search"
+            state.logs.append(f"verifier: low search quality ({state.verify_score:.2f}) → refine & re-run search")
 
         # Optional: if task quality low, force a minimal cleanup
         if route == "task" and isinstance(state.result, list):
@@ -363,7 +429,6 @@ PAYLOAD:
     return state
 
 
-
 # ---------- Build & compile graph ----------
 graph = StateGraph(AssistantState)
 
@@ -371,14 +436,31 @@ graph.add_node("classifier", request_classifier)
 graph.add_node("conf_gate", confidence_gate)
 graph.add_node("router", agent_router)
 graph.add_node("delegate", delegate_router)
-graph.add_node("responder", response_node)
 graph.add_node("verifier", verifier_node)
+graph.add_node("responder", response_node)
 
 graph.set_entry_point("classifier")
 graph.add_edge("classifier", "conf_gate")
 graph.add_edge("conf_gate", "router")
 graph.add_edge("router", "delegate")
-graph.add_edge("delegate", "verifier")
+
+# Add conditional edge from delegate back to verifier or handle re-delegation
+def should_continue_delegation(state: AssistantState) -> str:
+    """Determine if we need to continue delegation or move to verification"""
+    if state.delegate:
+        return "router"  # Continue delegation cycle
+    else:
+        return "verifier"  # Move to verification
+
+graph.add_conditional_edges(
+    "delegate",
+    should_continue_delegation,
+    {
+        "router": "router",
+        "verifier": "verifier"
+    }
+)
+
 graph.add_edge("verifier", "responder")
 
 app = graph.compile()
