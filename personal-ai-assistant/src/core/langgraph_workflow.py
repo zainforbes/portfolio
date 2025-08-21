@@ -1,6 +1,8 @@
 import json
 import re
 from typing import Any, Dict, List
+from utils.llm_cache import get as llm_cache_get, set_ as llm_cache_set
+
 
 from langgraph.graph import StateGraph
 from googleapiclient.errors import HttpError
@@ -149,7 +151,9 @@ Examples:
 
 Request: {state.user_input}
 """
-    raw = gemini.chat(prompt)
+    raw = llm_cache_get(prompt) or gemini.chat(prompt)
+    if llm_cache_get(prompt) is None:
+        llm_cache_set(prompt, raw)
     parsed = _parse_json_block(raw) or {"route": "search", "confidence": 0.5}
     route = _normalize_route(parsed.get("route", "search"))
     conf = float(parsed.get("confidence", 0.5))
@@ -389,7 +393,9 @@ PAYLOAD:
 {json.dumps(payload, ensure_ascii=False) if not isinstance(payload, str) else payload}
 """
 
-        raw = gemini.chat(prompt)
+        raw = llm_cache_get(prompt) or gemini.chat(prompt)
+        if llm_cache_get(prompt) is None:
+            llm_cache_set(prompt, raw)
         parsed = _parse_json_block(raw) or {"score": 0.6, "notes": ["fallback parse"], "corrected": None}
 
         state.verify_score = float(parsed.get("score", 0.6))
