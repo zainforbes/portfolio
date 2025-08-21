@@ -1,4 +1,4 @@
-from src.core.brave_client import BraveSearchClient
+from src.agents.brave_client import BraveSearchClient
 
 brave = BraveSearchClient()
 results = brave.search("LangGraph MCP Gemini", 3)

@@ -1,4 +1,4 @@
-from src.core.gmail_client import GmailClient
+from src.agents.gmail_client import GmailClient
 
 gmail = GmailClient()
 msgs = gmail.list_messages(5)

@@ -7,10 +7,10 @@ from googleapiclient.errors import HttpError
 
 from src.core.state_schema import AssistantState
 from src.core.llm_client import GeminiClient
-from src.core.gmail_client import GmailClient
-from src.core.calendar_client import GoogleCalendarClient
-from src.core.brave_client import BraveSearchClient
-from src.core.task_prioritizer import TaskPrioritizer
+from src.agents.gmail_client import GmailClient
+from src.agents.calendar_client import GoogleCalendarClient
+from src.agents.brave_client import BraveSearchClient
+from src.agents.task_prioritizer import TaskPrioritizer
 
 # Optional helpers (retry + micro-cache)
 try:

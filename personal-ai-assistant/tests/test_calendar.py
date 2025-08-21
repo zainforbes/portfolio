@@ -1,4 +1,4 @@
-from src.core.calendar_client import GoogleCalendarClient
+from src.agents.calendar_client import GoogleCalendarClient
 
 calendar = GoogleCalendarClient()
 events = calendar.get_upcoming_events(5)
