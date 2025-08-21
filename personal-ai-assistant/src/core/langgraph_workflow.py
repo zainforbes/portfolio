@@ -1,5 +1,3 @@
-# src/core/langgraph_workflow.py
-
 import json
 import re
 from typing import Any, Dict, List
@@ -48,6 +46,10 @@ except Exception:
     def cache_set(key: str, val: Any, ttl: int = 60):
         _CACHE[key] = (val, time.time() + ttl)  # type: ignore
 
+# ---------- Routing config ----------
+ROUTES = ["gmail", "calendar", "search", "task"]
+CONFIDENCE_THRESHOLD = 0.6
+
 # To help fuzzy cases where LLM might get confused with tasks
 SYN_TO_INTERNAL = {
     "email": "gmail", "mail": "gmail", "gmail": "gmail",
@@ -69,7 +71,7 @@ def _keyword_route(text: str) -> str | None:
         (r"\b(search|research|find|lookup|news)\b", "search"),
         (r"\b(task|prioriti[sz]e|priority|todo|to-do)\b", "task"),
     ]
-    import re
+
     for pat, route in patterns:
         if re.search(pat, t):
             return route
@@ -82,10 +84,6 @@ gmail_client = GmailClient()
 calendar_client = GoogleCalendarClient()
 brave_client = BraveSearchClient()
 task_prioritizer = TaskPrioritizer()
-
-# ---------- Routing config ----------
-ROUTES = ["gmail", "calendar", "search", "task"]
-CONFIDENCE_THRESHOLD = 0.6
 
 # ---------- Helpers ----------
 def _parse_json_block(txt: str):
@@ -103,6 +101,7 @@ def _parse_json_block(txt: str):
 
 # ---------- Nodes ----------
 def request_classifier(state: AssistantState) -> AssistantState:
+    # 1) deterministic keyword routing
     kr = _keyword_route(state.user_input)
     if kr:
         state.route = kr
@@ -110,7 +109,7 @@ def request_classifier(state: AssistantState) -> AssistantState:
         state.logs.append(f"classifier (keyword) → route={kr} conf=1.00")
         return state
 
-    # 2) Fall back to LLM classification
+    # 2) fallback to LLM JSON
     prompt = f"""
 Classify the request into one of: {ROUTES}.
 Return STRICT JSON ONLY:
