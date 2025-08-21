@@ -18,10 +18,8 @@ class GeminiClient:
     """
     Gemini client wrapper using google.generativeai.GenerativeModel.
 
-    - Requires GOOGLE_API_KEY in .env
-    - Methods:
-        - chat(prompt, max_tokens=256, temperature=0.0)
-        - classify(user_text) -> {"agent": str, "confidence": float, "raw": str, "reason": str}
+    This version is compatible with SDK variants where generate_content()
+    accepts only positional or the single prompt argument (no temperature/max_output_tokens kwargs).
     """
     DEFAULT_MODEL = "gemini-2.5-flash-lite"
 
@@ -31,11 +29,11 @@ class GeminiClient:
             raise ValueError("Missing GOOGLE_API_KEY in .env")
         genai.configure(api_key=api_key)
 
-        # instantiate model handle (keeps your previous usage)
+        # instantiate model handle (retain your previous usage pattern)
         try:
             self.model = genai.GenerativeModel(model)
         except Exception:
-            # fallback to None if model construction differs across SDK versions
+            # If construction fails for some SDK versions, keep self.model = None
             self.model = None
 
         self.model_name = model
@@ -49,10 +47,6 @@ class GeminiClient:
     # Helpers for prompt + JSON extraction
     # -------------------------
     def _build_classify_prompt(self, user_text: str) -> str:
-        """
-        Build a strict instruction prompt asking for ONLY JSON output.
-        Few-shot examples bias the model to the correct label.
-        """
         examples = [
             {"text": "Add task: buy milk", "agent": "task", "confidence": 0.98},
             {"text": "Schedule meeting with Alice next Tuesday", "agent": "calendar", "confidence": 0.97},
@@ -76,20 +70,14 @@ class GeminiClient:
         return instruction
 
     def _extract_json_from_text(self, text: str) -> Optional[Dict[str, Any]]:
-        """
-        Try to robustly extract the first JSON object from freeform text.
-        Returns parsed dict or None.
-        """
         if not text:
             return None
         self.last_raw = text
 
-        # Find first JSON-like substring
         start = text.find("{")
         if start == -1:
             return None
 
-        # find matching brace by scanning depth
         depth = 0
         end = -1
         for i in range(start, len(text)):
@@ -107,24 +95,18 @@ class GeminiClient:
         try:
             return json.loads(json_str)
         except Exception:
-            # sanitize and retry: replace single quotes, remove trailing commas
             sanitized = re.sub(r"'", '"', json_str)
             sanitized = re.sub(r",\s*}", "}", sanitized)
             sanitized = re.sub(r",\s*]", "]", sanitized)
             try:
                 return json.loads(sanitized)
             except Exception:
-                # if still failing, return None
                 return None
 
     # -------------------------
     # Public: classify()
     # -------------------------
     def classify(self, user_text: str) -> Dict[str, Any]:
-        """
-        Ask Gemini to classify the user's text into one of: email, calendar, task, coordinator.
-        Returns a dict: {agent, confidence, raw, reason}
-        """
         prompt = self._build_classify_prompt(user_text)
 
         attempt = 0
@@ -132,14 +114,22 @@ class GeminiClient:
         while attempt <= self.max_retries:
             attempt += 1
             try:
-                # Prefer using the model handle if available
+                # Use the simplest, SDK-compatible call: pass prompt as positional argument
                 if self.model is not None:
-                    resp = self.model.generate_content(prompt, temperature=0.0, max_output_tokens=120)
-                    raw = getattr(resp, "text", str(resp))
+                    # many SDK versions accept a single positional argument
+                    try:
+                        resp = self.model.generate_content(prompt)
+                    except TypeError:
+                        # If the SDK expects keyword name 'prompt'
+                        resp = self.model.generate_content(prompt=prompt)
                 else:
-                    # If model handle not available, use top-level genai.generate_text/generate_content
-                    resp = genai.generate_content(prompt=prompt, model=self.model_name, temperature=0.0, max_output_tokens=120)
-                    raw = getattr(resp, "text", str(resp))
+                    # fallback to top-level genai.generate_content using minimal args
+                    try:
+                        resp = genai.generate_content(prompt=prompt, model=self.model_name)
+                    except TypeError:
+                        resp = genai.generate_content(prompt)
+
+                raw = getattr(resp, "text", None) or str(resp)
                 raw = raw.strip()
                 self.last_raw = raw
 
@@ -152,7 +142,6 @@ class GeminiClient:
                     raise ValueError(f"Invalid or missing 'agent' in parsed JSON: {parsed!r}")
                 agent = agent.strip().lower()
 
-                # normalize known synonyms
                 if agent not in {"email", "calendar", "task", "coordinator"}:
                     if "mail" in agent or "email" in agent:
                         agent = "email"
@@ -174,27 +163,28 @@ class GeminiClient:
             except Exception as e:
                 last_exc = e
                 logger.warning("Gemini classify attempt %d failed: %s", attempt, e)
-                # backoff
                 sleep_t = self.backoff_base * (2 ** (attempt - 1))
                 time.sleep(sleep_t)
                 continue
 
         logger.error("Gemini classify failed after %d attempts: %s", attempt - 1, last_exc)
-        # final fallback to coordinator
         return {"agent": "coordinator", "confidence": 0.5, "raw": getattr(self, "last_raw", None), "reason": f"classify_failed:{last_exc}"}
 
     # -------------------------
     # Public: chat()
     # -------------------------
-    def chat(self, prompt: str, max_tokens: int = 256, temperature: float = 0.0) -> str:
-        """
-        Simple wrapper for model.generate_content with sensible defaults.
-        """
+    def chat(self, prompt: str) -> str:
         try:
             if self.model is not None:
-                resp = self.model.generate_content(prompt, temperature=temperature, max_output_tokens=max_tokens)
-                return getattr(resp, "text", str(resp))
-            resp = genai.generate_content(prompt=prompt, model=self.model_name, temperature=temperature, max_output_tokens=max_tokens)
+                try:
+                    resp = self.model.generate_content(prompt)
+                except TypeError:
+                    resp = self.model.generate_content(prompt=prompt)
+            else:
+                try:
+                    resp = genai.generate_content(prompt=prompt, model=self.model_name)
+                except TypeError:
+                    resp = genai.generate_content(prompt)
             return getattr(resp, "text", str(resp))
         except Exception as e:
             logger.exception("Gemini chat failed: %s", e)
