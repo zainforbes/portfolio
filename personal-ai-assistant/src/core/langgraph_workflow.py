@@ -432,8 +432,43 @@ PAYLOAD:
     except Exception as e:
         state.logs.append(f"verifier error: {e}")
 
-    return state
+MAX_TURNS = 6  # summarize when we exceed this
 
+def _summarize_turns(turns, prev_summary: str) -> str:
+    prompt = f"""
+You maintain a running briefing of this conversation.
+Given CURRENT SUMMARY and NEW TURNS, return a concise updated summary (bullets ok), no boilerplate.
+
+CURRENT SUMMARY:
+{prev_summary or "(none)"}
+
+NEW TURNS (user → assistant):
+{turns}
+"""
+    # Use the cache too
+    cached = llm_cache_get(prompt)
+    if cached is None:
+        out = gemini.chat(prompt).strip()
+        llm_cache_set(prompt, out)
+        return out
+    return cached.strip()
+
+def memory_node(state: AssistantState) -> AssistantState:
+    # append this turn
+    state.history.append((state.user_input, str(state.result)))
+
+    # summarize when too long
+    if len(state.history) > MAX_TURNS:
+        chunk = state.history[-MAX_TURNS:]
+        # compact printable block
+        block = "\n".join([f"U: {u}\nA: {a}" for (u,a) in chunk])
+        state.memory_summary = _summarize_turns(block, state.memory_summary)
+        # keep only the last 2 turns after summarizing
+        state.history = state.history[-2:]
+        state.logs.append("memory: summarized history to keep context small")
+
+
+    return state
 
 # ---------- Build & compile graph ----------
 graph = StateGraph(AssistantState)
@@ -444,6 +479,7 @@ graph.add_node("router", agent_router)
 graph.add_node("delegate", delegate_router)
 graph.add_node("verifier", verifier_node)
 graph.add_node("responder", response_node)
+graph.add_node("memory", memory_node)
 
 graph.set_entry_point("classifier")
 graph.add_edge("classifier", "conf_gate")
@@ -468,5 +504,6 @@ graph.add_conditional_edges(
 )
 
 graph.add_edge("verifier", "responder")
+graph.add_edge("responder", "memory") # Lightweight conversation memory
 
 app = graph.compile()

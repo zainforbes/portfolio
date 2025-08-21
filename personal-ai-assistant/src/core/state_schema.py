@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from pydantic import BaseModel
 
 class AssistantState(BaseModel):
@@ -12,3 +12,7 @@ class AssistantState(BaseModel):
     logs: List[str] = []
     verify_score: float = 0.0           # 0..1 quality score from verifier
     verify_notes: List[str] = []        # quick notes on issues / fixes
+
+        # NEW: simple memory
+    history: List[Tuple[str, str]] = []
+    memory_summary: str = ""
