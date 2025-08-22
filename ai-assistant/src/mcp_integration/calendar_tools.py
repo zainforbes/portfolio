@@ -8,23 +8,23 @@ import sys
 import os
 import base64
 
-from src.mcp_integration.mcp_client import MCPClient
+from src.mcp_integration.gemini_mcp_client import GeminiMCPClient
 
 
 class CalendarTools:
-    def __init__(self, mcp_client: MCPClient):
+    def __init__(self, mcp_client: GeminiMCPClient):
         self.client = mcp_client
         self.server_name = "calendar"
     
     async def start(self):
-        """Start Calendar MCP server"""
-        calendar_server_path = Path(__file__).parent / "calendar_server.py"
-        command = [sys.executable, str(calendar_server_path)]
-        
-        success = await self.client.start_server(self.server_name, command)
-        if success:
-            await self.client.list_tools(self.server_name)
-        return success
+        """Initialize Calendar tools via GeminiMCPClient"""
+        # Calendar functionality is built into GeminiMCPClient, so just verify it's initialized
+        try:
+            await self.client.initialize()
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to initialize calendar tools: {e}")
+            return False
     
     def _extract_calendar_response(self, response: Dict) -> Dict:
         """Extract Calendar response from MCP format"""
@@ -45,23 +45,10 @@ class CalendarTools:
     
     async def list_events(self, days_ahead: int = 7) -> Dict:
         """List calendar events"""
-        result = await self.client.call_tool(
-            self.server_name,
-            "list_events",
-            {"days_ahead": days_ahead}
-        )
-        return self._extract_calendar_response(result)
+        result = await self.client._list_calendar_events(days_ahead)
+        return result
     
     async def create_event(self, title: str, start_time: str, end_time: str, description: str = "") -> Dict:
         """Create a calendar event"""
-        result = await self.client.call_tool(
-            self.server_name,
-            "create_event",
-            {
-                "title": title,
-                "start_time": start_time,
-                "end_time": end_time,
-                "description": description
-            }
-        )
-        return self._extract_calendar_response(result)
+        result = await self.client._create_calendar_event(title, start_time, end_time, description)
+        return result

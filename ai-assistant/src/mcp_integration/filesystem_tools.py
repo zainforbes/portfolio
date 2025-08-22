@@ -3,11 +3,11 @@ import os
 import sys
 import platform
 from pathlib import Path
-from .mcp_client import MCPClient
+from .gemini_mcp_client import GeminiMCPClient
 from typing import List, Dict, Any
 
 class FilesystemTools:
-    def __init__(self, mcp_client: MCPClient):
+    def __init__(self, mcp_client: GeminiMCPClient):
         self.client = mcp_client
         self.server_name = "filesystem"
     
@@ -99,61 +99,42 @@ class FilesystemTools:
         return []
     
     async def start(self, allowed_directories = None):
-        """Start filesystem MCP server with Windows compatibility"""
-        if allowed_directories is None:
-            allowed_directories = []
-        
-        commands_to_try = self._get_filesystem_server_command(allowed_directories)
-        
-        print("Attempting to start MCP filesystem server...")
-        
-        for i, command in enumerate(commands_to_try, 1):
-            print(f"Method {i}: Trying command: {' '.join(command)}")
-            
-            try:
-                success = await self.client.start_server(self.server_name, command)
-                if success:
-                    await self.client.list_tools(self.server_name)
-                    print(f"✓ Successfully started filesystem server!")
-                    return True
-            except Exception as e:
-                print(f"✗ Method {i} failed: {e}")
-                continue
-        
-        return False
+        """Initialize filesystem tools via GeminiMCPClient"""
+        # Filesystem functionality is built into GeminiMCPClient, so just verify it's initialized
+        try:
+            await self.client.initialize()
+            print("✓ Filesystem tools initialized via GeminiMCPClient!")
+            return True
+        except Exception as e:
+            print(f"✗ Failed to initialize filesystem tools: {e}")
+            return False
     
     async def read_file(self, filepath: str) -> str:
         """Read contents of a file"""
-        result = await self.client.call_tool(
-            self.server_name,
-            "read_file",
-            {"path": filepath}
-        )
-        
-        return self._extract_content_from_mcp_response(result)
+        result = await self.client._read_file(filepath)
+        return result
     
     async def write_file(self, filepath: str, content: str) -> bool:
         """Write content to a file"""
-        result = await self.client.call_tool(
-            self.server_name,
-            "write_file",
-            {"path": filepath, "content": content}
-        )
-        
-        # Check if the operation was successful
-        if 'result' in result:
-            return True
-        elif 'error' in result:
-            print(f"Write error: {result['error']}")
-            return False
-        return False
+        result = await self.client._write_file(filepath, content)
+        # Check if the operation was successful (no error message means success)
+        return not result.startswith("File writing failed")
     
     async def list_directory(self, dirpath: str) -> List[Dict]:
         """List contents of a directory"""
-        result = await self.client.call_tool(
-            self.server_name,
-            "list_directory",
-            {"path": dirpath}
-        )
-        
-        return self._extract_entries_from_list_response(result)
+        result = await self.client._list_directory(dirpath)
+        # Parse the directory listing text into dictionary format
+        entries = []
+        if result and not result.startswith("Directory listing failed"):
+            lines = result.split('\n')
+            for line in lines:
+                if line.strip().startswith('DIR:') or line.strip().startswith('FILE:'):
+                    parts = line.strip().split(': ', 1)
+                    if len(parts) == 2:
+                        type_str = parts[0].strip()
+                        name = parts[1].split(' (')[0] if ' (' in parts[1] else parts[1]
+                        entries.append({
+                            'name': name,
+                            'type': 'directory' if type_str == 'DIR' else 'file'
+                        })
+        return entries

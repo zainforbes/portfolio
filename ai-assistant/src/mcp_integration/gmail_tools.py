@@ -8,22 +8,22 @@ import sys
 import os
 import base64
 
-from src.mcp_integration.mcp_client import MCPClient
+from src.mcp_integration.gemini_mcp_client import GeminiMCPClient
 
 class GmailTools:
-    def __init__(self, mcp_client: MCPClient):
+    def __init__(self, mcp_client: GeminiMCPClient):
         self.client = mcp_client
         self.server_name = "gmail"
     
     async def start(self):
-        """Start Gmail MCP server"""
-        gmail_server_path = Path(__file__).parent / "gmail_server.py"
-        command = [sys.executable, str(gmail_server_path)]
-        
-        success = await self.client.start_server(self.server_name, command)
-        if success:
-            await self.client.list_tools(self.server_name)
-        return success
+        """Initialize Gmail tools via GeminiMCPClient"""
+        # Gmail functionality is built into GeminiMCPClient, so just verify it's initialized
+        try:
+            await self.client.initialize()
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to initialize gmail tools: {e}")
+            return False
     
     def _extract_gmail_response(self, response: Dict) -> Dict:
         """Extract Gmail response from MCP format"""
@@ -44,27 +44,15 @@ class GmailTools:
     
     async def list_messages(self, query: str = "", max_results: int = 10) -> Dict:
         """List Gmail messages"""
-        result = await self.client.call_tool(
-            self.server_name,
-            "list_messages",
-            {"query": query, "max_results": max_results}
-        )
-        return self._extract_gmail_response(result)
+        result = await self.client._list_emails(query, max_results)
+        return result
     
     async def read_message(self, message_id: str) -> Dict:
         """Read a Gmail message"""
-        result = await self.client.call_tool(
-            self.server_name,
-            "read_message",
-            {"message_id": message_id}
-        )
-        return self._extract_gmail_response(result)
+        result = await self.client._read_email(message_id)
+        return result
     
     async def send_message(self, to: str, subject: str, body: str) -> Dict:
         """Send a Gmail message"""
-        result = await self.client.call_tool(
-            self.server_name,
-            "send_message",
-            {"to": to, "subject": subject, "body": body}
-        )
-        return self._extract_gmail_response(result)
+        result = await self.client._send_email(to, subject, body)
+        return result
