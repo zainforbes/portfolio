@@ -29,7 +29,7 @@ class GeminiMCPClient:
         genai.configure(api_key=self.api_key)
         # Use a more commonly available Gemini model
         try:
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
         except:
             # Fallback to other available models
             try:
