@@ -567,20 +567,19 @@ Keep summaries under 100 words but capture all critical information.""",
         return self._add_agent_message(state, "Email search feature is ready for implementation.", "info")
 
     async def _general_email_assistance(self, state: AssistantState) -> AssistantState:
-        """Provide general email assistance."""
-        # Extract user input from state
-        if isinstance(state, str):
-            user_input = state
-        else:
-            user_input = state.get('user_input', '')
+        user_input = state.get("user_input", "")
 
-        # Check if the user is asking for general tips or help
         if "how" in user_input.lower() or "tips" in user_input.lower():
             response = await self.generate_response(
                 user_input,
-                context="You are a helpful email assistant. Provide guidance on email management, organization, and best practices."
+                context="You are a helpful email assistant. Provide tips on managing, organizing, and writing better emails."
             )
             return self._add_agent_message(state, response, "assistance")
-        else:
-            return await self._clarify_email_intent(state)
+
+        # Intent not clear – ask user
+        clarification = await self.generate_response(
+            "Ask the user to clarify what they need help with regarding emails.",
+            context="Prompt the user to be more specific about their email-related request."
+        )
+        return self._add_agent_message(state, clarification, "clarify_intent")
         
