@@ -281,26 +281,20 @@ Focus on improving search effectiveness."""
         for i, result in enumerate(quality_results[:5], 1):
             results_summary.append(f"{i}. {result.title}\n   {result.description}\n   {result.url}")
         
-        prompt = f"""Based on the search query "{query}", I found these relevant results:
+        prompt = f"""Answer this question directly and concisely: "{query}"
 
+Based on these search results:
 {chr(10).join(results_summary)}
 
-Please provide a helpful summary that:
-1. Answers the user's question based on these results
-2. Highlights the most relevant information
-3. Mentions credible sources
-4. Suggests follow-up searches if needed
-
-Keep the response informative but concise."""
+Requirements:
+- Provide a direct answer in 1-2 sentences
+- Use the most relevant information
+- Be factual and concise
+- No explanations or elaborations"""
         
         response = await self.generate_response(prompt)
         
-        # Add result count info
-        total_results = len(results)
-        quality_count = len(quality_results)
-        
-        response += f"\n\nI found {total_results} results total, showing the {quality_count} most relevant ones."
-        
+        # Return just the concise answer without metadata
         return response
 
     async def _handle_result_analysis(self, state: AssistantState, search_action: Dict[str, Any]) -> AssistantState:
