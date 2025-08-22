@@ -6,13 +6,12 @@ Provides Gmail functionality through MCP protocol
 
 import json
 import base64
+import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
-
-# Gmail API would be imported here
-# from googleapiclient.discovery import build
-# from google.auth.transport.requests import Request
-# from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
 
 class GmailMCPServer:
     """
@@ -735,3 +734,96 @@ class GmailMCPServer:
     def get_available_tools(self) -> Dict[str, Any]:
         """Get list of available MCP tools."""
         return self.tools
+
+    async def handle_request(self, request: Dict) -> Dict:
+        """Handle MCP JSON-RPC requests"""
+        method = request.get("method")
+        request_id = request.get("id")
+        
+        try:
+            if method == "initialize":
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "gmail-server", "version": "1.0.0"}
+                    }
+                }
+            
+            elif method == "tools/list":
+                tools_list = [
+                    {
+                        "name": tool_name,
+                        "description": tool_info["description"],
+                        "inputSchema": tool_info["inputSchema"]
+                    }
+                    for tool_name, tool_info in self.tools.items()
+                ]
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"tools": tools_list}
+                }
+            
+            elif method == "tools/call":
+                params = request.get("params", {})
+                tool_name = params.get("name")
+                arguments = params.get("arguments", {})
+                
+                result = await self.call_tool(tool_name, arguments)
+                
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [{"type": "text", "text": json.dumps(result, indent=2)}]
+                    }
+                }
+            
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32601, "message": "Method not found"}
+            }
+            
+        except Exception as e:
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
+            }
+
+    async def run_server(self):
+        """Run the MCP server loop"""
+        import sys
+        while True:
+            try:
+                line = await asyncio.get_event_loop().run_in_executor(
+                    None, sys.stdin.readline
+                )
+                
+                if not line:
+                    break
+                
+                request = json.loads(line.strip())
+                response = await self.handle_request(request)
+                print(json.dumps(response), flush=True)
+                
+            except json.JSONDecodeError:
+                continue
+            except Exception as e:
+                error_response = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": f"Parse error: {str(e)}"}
+                }
+                print(json.dumps(error_response), flush=True)
+
+if __name__ == "__main__":
+    async def main():
+        server = GmailMCPServer()
+        await server.run_server()
+    
+    asyncio.run(main())

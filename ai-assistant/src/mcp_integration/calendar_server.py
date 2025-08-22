@@ -46,8 +46,10 @@ class CalendarServer:
     async def _authenticate(self):
         """Authenticate with Calendar API"""
         creds = None
-        token_path = 'calendar_token.json'
-        credentials_path = 'credentials.json'
+        # Ensure config directory exists
+        os.makedirs('config', exist_ok=True)
+        token_path = 'config/calendar_token.json'
+        credentials_path = os.getenv("GOOGLE_CLIENT_SECRET") or 'config/oauth_credentials.json'
         
         if os.path.exists(token_path):
             creds = Credentials.from_authorized_user_file(token_path, SCOPES)
@@ -61,7 +63,7 @@ class CalendarServer:
                 
                 flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
                 creds = await asyncio.get_event_loop().run_in_executor(
-                    None, flow.run_local_server, {'port': 0}
+                    None, lambda: flow.run_local_server(port=0)
                 )
             
             with open(token_path, 'w') as token:

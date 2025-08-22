@@ -8,7 +8,7 @@ import sys
 import os
 import base64
 
-from mcp_integration.mcp_client import MCPClient
+from src.mcp_integration.mcp_client import MCPClient
 
 class GmailTools:
     def __init__(self, mcp_client: MCPClient):
