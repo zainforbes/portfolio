@@ -192,7 +192,7 @@ Focus on improving search effectiveness."""
             response = await self._generate_search_response(query, processed_results)
             
             # Update state
-            state['response'] = response
+            state['final_response'] = response
             state['search_results'] = processed_results
             state['search_query'] = query
             state['task_type'] = 'web_search'
@@ -201,7 +201,7 @@ Focus on improving search effectiveness."""
             
         except Exception as e:
             self.logger.error(f"Web search failed: {e}")
-            state['response'] = f"I encountered an error while searching: {str(e)}"
+            state['final_response'] = f"I encountered an error while searching: {str(e)}"
             return state
 
     async def _process_search_results(self, search_results: Dict[str, Any], query: str) -> List[SearchResult]:
@@ -302,7 +302,7 @@ Keep the response informative but concise."""
         search_results = state.get('search_results', [])
         
         if not search_results:
-            state['response'] = "No search results to analyze. Please perform a search first."
+            state['final_response'] = "No search results to analyze. Please perform a search first."
             return state
         
         # Analyze search patterns
@@ -314,7 +314,7 @@ Keep the response informative but concise."""
             context=self.system_prompts['search_analysis']
         )
         
-        state['response'] = response
+        state['final_response'] = response
         state['search_analysis'] = analysis
         
         return state
@@ -379,7 +379,7 @@ Focus on improving search effectiveness and finding authoritative sources."""
             context=self.system_prompts['query_optimization']
         )
         
-        state['response'] = response
+        state['final_response'] = response
         state['task_type'] = 'query_optimization'
         
         return state
@@ -396,7 +396,7 @@ Focus on improving search effectiveness and finding authoritative sources."""
 
 Just ask me to search for something, or say "search for [your topic]" to get started!"""
         
-        state['response'] = response
+        state['final_response'] = response
         state['task_type'] = 'search_help'
         
         return state

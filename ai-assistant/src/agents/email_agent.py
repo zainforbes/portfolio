@@ -124,7 +124,7 @@ Keep summaries under 100 words but capture all critical information.""",
             elif operation == "search_emails":
                 return await self._search_emails(state)
             else:
-                return await self._general_email_assistance(state)
+                return await self._clarify_email_intent(state)
                 
         except Exception as e:
             self.logger.error(f"Email agent execution failed: {e}")
@@ -286,6 +286,24 @@ Keep summaries under 100 words but capture all critical information.""",
                 suggested_actions=["review"],
                 confidence=0.5
             )
+
+
+    async def _clarify_email_intent(self, state: AssistantState) -> AssistantState:
+        """Prompt user to clarify their intended email task."""
+        clarification_prompt = (
+            "What would you like me to do with your emails?\n\n"
+            "- 📬 Summarize recent emails\n"
+            "- 🗂️ Classify emails by priority\n"
+            "- 🔎 Search for a specific email\n"
+            "- ✉️ Compose or respond to an email\n\n"
+            "Please tell me what you'd like help with."
+        )
+        
+        state["task_type"] = "email_intent_clarification"
+        state["pending_requests"] = ["email_task"]
+        state["current_agent"] = self.agent_name
+        return self._add_agent_message(state, clarification_prompt, "clarification")
+
 
     def _parse_classification_response(self, response: str) -> Dict[str, Any]:
         """Parse AI response into classification data."""
@@ -550,14 +568,19 @@ Keep summaries under 100 words but capture all critical information.""",
 
     async def _general_email_assistance(self, state: AssistantState) -> AssistantState:
         """Provide general email assistance."""
-        # Ensure state is a dictionary
+        # Extract user input from state
         if isinstance(state, str):
             user_input = state
         else:
-            user_input = state.get('user_input', 'How can I help with your emails?')
-            
-        response = await self.generate_response(
-            user_input,
-            context="You are a helpful email assistant. Provide guidance on email management, organization, and best practices."
-        )
-        return self._add_agent_message(state, response, "assistance")
+            user_input = state.get('user_input', '')
+
+        # Check if the user is asking for general tips or help
+        if "how" in user_input.lower() or "tips" in user_input.lower():
+            response = await self.generate_response(
+                user_input,
+                context="You are a helpful email assistant. Provide guidance on email management, organization, and best practices."
+            )
+            return self._add_agent_message(state, response, "assistance")
+        else:
+            return await self._clarify_email_intent(state)
+        
