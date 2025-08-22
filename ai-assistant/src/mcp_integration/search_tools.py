@@ -1,68 +1,95 @@
-# src/mcp_integration/search_tools.py
 import os
-import sys
-import json
-from pathlib import Path
-from .mcp_client import MCPClient
-from typing import List, Dict
+import asyncio
+import logging
+from typing import List, Dict, Any, Optional
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 class SearchTools:
-    def __init__(self, mcp_client: MCPClient, api_key: str = None):
-        self.client = mcp_client
-        self.server_name = "search"
-        self.api_key = api_key or os.getenv('BRAVE_API_KEY')
+    """Search tools integration using MCP client and Brave Search API."""
+    
+    def __init__(self, mcp_client):
+        self.mcp_client = mcp_client
+        # Set the API key from environment variable
+        self.api_key = os.getenv("BRAVE_API_KEY")
+        # Alternative attribute names in case your code uses different naming
+        self.brave_api_key = self.api_key
+        
+        if not self.api_key:
+            logger.error("BRAVE_API_KEY not found in environment variables")
+        else:
+            logger.info(f"Brave API key loaded (length: {len(self.api_key)})")
     
     async def start(self):
-        """Start custom search MCP server"""
+        """Start the search tools service."""
         if not self.api_key:
-            raise ValueError("Brave API key required")
+            raise ValueError("Brave API key required. Check your .env file contains BRAVE_API_KEY=your_key")
         
-        # Path to our custom search server
-        search_server_path = Path(__file__).parent / "custom_search_server.py"
-        
-        command = [sys.executable, str(search_server_path)]
-        
-        # Set environment variable for API key
-        env = os.environ.copy()
-        env['BRAVE_API_KEY'] = self.api_key
-        
-        success = await self.client.start_server(
-            self.server_name, 
-            command,
-            {'env': env}
-        )
-        
-        if success:
-            await self.client.list_tools(self.server_name)
-        return success
+        # Initialize any additional setup here
+        logger.info("SearchTools started successfully")
+        return True
     
-    def _extract_search_results(self, response: Dict) -> List[Dict]:
-        """Extract search results from MCP response"""
-        if 'result' not in response:
-            return []
+    async def web_search(self, query: str, count: int = 10) -> List[Dict[str, Any]]:
+        """
+        Perform web search using Brave Search API.
         
-        result = response['result']
+        Args:
+            query: Search query string
+            count: Number of results to return (default: 10)
+            
+        Returns:
+            List of search results with title, url, description
+        """
+        if not self.api_key:
+            raise ValueError("Brave API key not available")
         
-        # Handle MCP content format
-        if isinstance(result, dict) and 'content' in result:
-            content = result['content']
-            if isinstance(content, list) and len(content) > 0:
-                for item in content:
-                    if isinstance(item, dict) and item.get('type') == 'text':
-                        try:
-                            search_data = json.loads(item.get('text', '{}'))
-                            return search_data.get('results', [])
-                        except json.JSONDecodeError:
-                            pass
-        
-        return []
+        try:
+            import httpx
+            
+            url = "https://api.search.brave.com/res/v1/web/search"
+            headers = {
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip",
+                "X-Subscription-Token": self.api_key
+            }
+            params = {
+                "q": query,
+                "count": count
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                
+                data = response.json()
+                results = []
+                
+                # Parse Brave Search API response
+                web_results = data.get("web", {}).get("results", [])
+                for result in web_results:
+                    results.append({
+                        "title": result.get("title", ""),
+                        "url": result.get("url", ""),
+                        "description": result.get("description", ""),
+                        "age": result.get("age", ""),
+                        "language": result.get("language", ""),
+                        "family_friendly": result.get("family_friendly", True)
+                    })
+                
+                logger.info(f"Web search completed: {len(results)} results for '{query}'")
+                return results
+                
+        except ImportError:
+            raise ImportError("httpx library required for web search. Install with: pip install httpx")
+        except Exception as e:
+            logger.error(f"Web search failed: {e}")
+            raise
     
-    async def web_search(self, query: str, count: int = 10) -> List[Dict]:
-        """Perform web search"""
-        result = await self.client.call_tool(
-            self.server_name,
-            "web_search",
-            {"query": query, "count": count}
-        )
-        
-        return self._extract_search_results(result)
+    async def shutdown(self):
+        """Shutdown the search tools."""
+        logger.info("SearchTools shutdown completed")
+        pass

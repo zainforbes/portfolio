@@ -1,4 +1,3 @@
-# src/mcp_integration/gmail_server.py
 import asyncio
 import json
 import sys
