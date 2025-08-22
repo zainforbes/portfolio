@@ -14,18 +14,18 @@ class BaseAgent(ABC):
     """
     
     def __init__(self, 
-                 mcp_client,
+                 gemini_mcp_client,
                  agent_name: str,
                  capabilities: List[str] = None):
         """
         Initialize the base agent with shared components.
         
         Args:
-            mcp_client: MCP client for tool access (including Gemini tools)
+            gemini_mcp_client: Gemini MCP client for all AI operations and tool access
             agent_name: Unique name for this agent
             capabilities: List of capabilities this agent provides
         """
-        self.mcp_client = mcp_client
+        self.gemini_mcp_client = gemini_mcp_client
         self.agent_name = agent_name
         self.capabilities = capabilities or []
         
@@ -104,7 +104,7 @@ Focus on your specific domain of expertise.""",
     
     async def use_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Any:
         """
-        Use an MCP tool with error handling and logging.
+        Use an MCP tool via Gemini MCP client with error handling and logging.
         
         Args:
             tool_name: Name of the tool to use
@@ -115,7 +115,78 @@ Focus on your specific domain of expertise.""",
         """
         try:
             self.logger.info(f"Using tool: {tool_name} with params: {parameters}")
-            result = await self.mcp_client.call_tool(tool_name, parameters)
+            
+            # Route different tools through the appropriate Gemini MCP client methods
+            if tool_name.startswith('gmail_') or tool_name in ['list_emails', 'read_email', 'send_email']:
+                # Use Gmail tools through Gemini MCP client
+                if tool_name == 'list_emails' or tool_name == 'gmail_list_messages':
+                    result = await self.gemini_mcp_client._list_emails(
+                        parameters.get('query', ''),
+                        parameters.get('max_results', 10)
+                    )
+                elif tool_name == 'read_email' or tool_name == 'gmail_get_message':
+                    result = await self.gemini_mcp_client._read_email(
+                        parameters.get('message_id', '')
+                    )
+                elif tool_name == 'send_email' or tool_name == 'gmail_send_message':
+                    result = await self.gemini_mcp_client._send_email(
+                        parameters.get('to', ''),
+                        parameters.get('subject', ''),
+                        parameters.get('body', '')
+                    )
+                else:
+                    result = {"error": f"Unknown Gmail tool: {tool_name}"}
+                    
+            elif tool_name.startswith('calendar_') or tool_name in ['list_calendar_events', 'create_calendar_event']:
+                # Use Calendar tools through Gemini MCP client
+                if tool_name == 'list_calendar_events' or tool_name == 'calendar_list_events':
+                    result = await self.gemini_mcp_client._list_calendar_events(
+                        parameters.get('days_ahead', 7)
+                    )
+                elif tool_name == 'create_calendar_event' or tool_name == 'calendar_create_event':
+                    result = await self.gemini_mcp_client._create_calendar_event(
+                        parameters.get('title', ''),
+                        parameters.get('start_time', ''),
+                        parameters.get('end_time', ''),
+                        parameters.get('description', '')
+                    )
+                else:
+                    result = {"error": f"Unknown Calendar tool: {tool_name}"}
+                    
+            elif tool_name.startswith('search_') or tool_name in ['search_web', 'web_search', 'brave_search']:
+                # Use search tools through Gemini MCP client
+                if tool_name == 'search_web' or tool_name == 'web_search':
+                    result = await self.gemini_mcp_client._search_web(
+                        parameters.get('query', ''),
+                        parameters.get('count', 10)
+                    )
+                elif tool_name == 'brave_search':
+                    result = await self.gemini_mcp_client._brave_search(
+                        parameters.get('query', ''),
+                        parameters.get('count', 10),
+                        **{k: v for k, v in parameters.items() if k not in ['query', 'count']}
+                    )
+                elif tool_name == 'search_summarize':
+                    result = await self.gemini_mcp_client._search_summarize(
+                        parameters.get('query', ''),
+                        parameters.get('max_results', 5)
+                    )
+                elif tool_name == 'search_analyze':
+                    result = await self.gemini_mcp_client._search_analyze(
+                        parameters.get('query', ''),
+                        parameters.get('include_domains', True),
+                        parameters.get('include_keywords', True)
+                    )
+                else:
+                    result = {"error": f"Unknown search tool: {tool_name}"}
+                
+            elif tool_name == 'gemini_generate':
+                # Use Gemini directly through MCP client
+                result = await self.gemini_mcp_client.chat(parameters.get('prompt', ''))
+                
+            else:
+                result = {"error": f"Unknown tool: {tool_name}"}
+            
             self.logger.info(f"Tool {tool_name} completed successfully")
             return result
         except Exception as e:
@@ -144,17 +215,9 @@ Focus on your specific domain of expertise.""",
                 full_prompt += f"Context: {context}\n\n"
             full_prompt += f"Request: {prompt}"
             
-            # Use Gemini via MCP tools
-            response = await self.use_tool(
-                "gemini_generate", 
-                {
-                    "prompt": full_prompt,
-                    "temperature": temperature,
-                    "max_output_tokens": 1000
-                }
-            )
-            
-            return response.get('text', 'No response generated')
+            # Use Gemini MCP client for all AI generation
+            response = await self.gemini_mcp_client.chat(full_prompt)
+            return response if response else 'No response generated'
             
         except Exception as e:
             self.logger.error(f"Error generating response: {e}")
@@ -284,69 +347,3 @@ Focus on your specific domain of expertise.""",
             'status': 'active',
             'stats': self.execution_stats.copy()
         }
-
-
-# src/core/message_types.py
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, Any, Optional
-
-@dataclass
-class AgentMessage:
-    """
-    Standard message format for inter-agent communication.
-    """
-    sender: str
-    recipient: str
-    message_type: str
-    payload: Dict[str, Any]
-    timestamp: datetime
-    correlation_id: Optional[str] = None
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert message to dictionary format."""
-        return {
-            'sender': self.sender,
-            'recipient': self.recipient,
-            'message_type': self.message_type,
-            'payload': self.payload,
-            'timestamp': self.timestamp.isoformat(),
-            'correlation_id': self.correlation_id
-        }
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'AgentMessage':
-        """Create message from dictionary."""
-        return cls(
-            sender=data['sender'],
-            recipient=data['recipient'],
-            message_type=data['message_type'],
-            payload=data['payload'],
-            timestamp=datetime.fromisoformat(data['timestamp']),
-            correlation_id=data.get('correlation_id')
-        )
-
-
-# Message types for agent communication
-class MessageTypes:
-    # Basic communication
-    PING = "ping"
-    PONG = "pong"
-    STATUS_REQUEST = "status_request"
-    STATUS_RESPONSE = "status_response"
-    
-    # Task delegation
-    TASK_REQUEST = "task_request"
-    TASK_RESPONSE = "task_response"
-    TASK_COMPLETE = "task_complete"
-    TASK_FAILED = "task_failed"
-    
-    # Coordination
-    ESCALATION = "escalation"
-    COLLABORATION_REQUEST = "collaboration_request"
-    CONTEXT_SHARE = "context_share"
-    
-    # Data exchange
-    DATA_REQUEST = "data_request"
-    DATA_RESPONSE = "data_response"
-    UPDATE_NOTIFICATION = "update_notification"

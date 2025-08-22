@@ -59,7 +59,7 @@ class GeminiClient:
 
         instruction = (
             "You are a routing assistant. Given the user's request, return a JSON object with exactly two keys:\n"
-            "  - \"agent\": one of the following literal strings: \"email\", \"calendar\", \"task\", \"coordinator\"\n"
+            "  - \"agent\": one of the following literal strings: \"email\", \"calendar\", \"coordinator\"\n"
             "  - \"confidence\": a number between 0.0 and 1.0 representing classifier confidence\n\n"
             "Return ONLY the JSON object and nothing else. Do not add commentary or code fences.\n"
             "If the user text contains multiple distinct actions (e.g., both schedule and email), choose \"coordinator\".\n\n"

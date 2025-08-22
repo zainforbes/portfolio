@@ -35,7 +35,7 @@ class EmailAgent(BaseAgent):
     Handles email classification, summarization, and automated responses.
     """
     
-    def __init__(self, mcp_client, agent_name: str = "EmailAgent"):
+    def __init__(self, gemini_mcp_client, agent_name: str = "EmailAgent"):
         capabilities = [
             "email_classification",
             "email_summarization", 
@@ -46,7 +46,7 @@ class EmailAgent(BaseAgent):
             "sentiment_analysis"
         ]
         
-        super().__init__(mcp_client, agent_name, capabilities)
+        super().__init__(gemini_mcp_client, agent_name, capabilities)
         
         # Email-specific prompt templates
         self.system_prompts.update({
@@ -103,6 +103,11 @@ Keep summaries under 100 words but capture all critical information.""",
     async def execute(self, state: AssistantState) -> AssistantState:
         """Execute email agent operations based on current state and context."""
         try:
+            # Ensure state is a dictionary, not a string
+            if isinstance(state, str):
+                self.logger.error(f"State is a string instead of dict: {state}")
+                return {'final_response': f"I understand you'd like me to help with: {state}. However, I'm experiencing a technical issue with my email functionality. Please try again or rephrase your request."}
+            
             user_request = state.get('user_input', '')
             
             # Determine what email operation to perform
@@ -163,6 +168,10 @@ Keep summaries under 100 words but capture all critical information.""",
 
     def _add_agent_message(self, state: AssistantState, content: str, message_type: str = "info") -> AssistantState:
         """Helper to add agent messages to state using your schema."""
+        # Ensure state is a dictionary
+        if isinstance(state, str):
+            state = {'user_input': state, 'agent_messages': [], 'final_response': content}
+            
         agent_messages = state.get('agent_messages', [])
         agent_messages.append({
             'agent': self.agent_name,
@@ -541,7 +550,12 @@ Keep summaries under 100 words but capture all critical information.""",
 
     async def _general_email_assistance(self, state: AssistantState) -> AssistantState:
         """Provide general email assistance."""
-        user_input = state.get('user_input', 'How can I help with your emails?')
+        # Ensure state is a dictionary
+        if isinstance(state, str):
+            user_input = state
+        else:
+            user_input = state.get('user_input', 'How can I help with your emails?')
+            
         response = await self.generate_response(
             user_input,
             context="You are a helpful email assistant. Provide guidance on email management, organization, and best practices."
