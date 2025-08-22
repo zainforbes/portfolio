@@ -12,16 +12,14 @@ class CoreOrchestrator:
     Handles request routing, response verification, and fallback logic.
     """
     
-    def __init__(self, gemini_client, mcp_client):
+    def __init__(self, gemini_mcp_client):
         """
         Initialize the core orchestrator.
         
         Args:
-            gemini_client: Gemini API client for AI operations
-            mcp_client: MCP client for tool access
+            gemini_mcp_client: Gemini MCP client for all AI operations and tool access
         """
-        self.gemini_client = gemini_client
-        self.mcp_client = mcp_client
+        self.gemini_mcp_client = gemini_mcp_client
         
         # Setup logging
         self.logger = logging.getLogger("orchestrator")
@@ -43,6 +41,13 @@ class CoreOrchestrator:
                 'task', 'todo', 'priority', 'deadline', 'project',
                 'complete', 'finish', 'work on', 'assignment',
                 'deliverable', 'milestone', 'progress'
+            ],
+            'search': [
+                'search', 'find', 'look up', 'research', 'investigate',
+                'what is', 'who is', 'how to', 'when did', 'where is',
+                'google', 'browse', 'web', 'internet', 'online',
+                'information about', 'details on', 'facts about',
+                'brave search', 'web search'
             ]
         }
         
@@ -70,7 +75,14 @@ class CoreOrchestrator:
             
             # Analyze request using multiple methods
             keyword_analysis = await self._analyze_keywords(user_input)
-            ai_analysis = await self._analyze_with_ai(user_input, context)
+            # Temporarily disable AI analysis since MCP isn't working
+            # ai_analysis = await self._analyze_with_ai(user_input, context)
+            ai_analysis = {
+                'best_route': 'fallback',
+                'confidence': 0.0,
+                'reasoning': 'AI analysis disabled - using keyword only',
+                'method': 'ai_analysis'
+            }
             
             # Combine analyses for final routing decision
             route_decision = await self._make_routing_decision(
@@ -117,13 +129,18 @@ class CoreOrchestrator:
             
             for keyword in keywords:
                 if keyword in input_lower:
-                    score += 1
+                    # Give higher weight to exact matches
+                    weight = 2 if keyword == input_lower.strip() else 1
+                    score += weight
                     matched_keywords.append(keyword)
             
-            # Normalize score
+            # Normalize score but give bonus for matches
             if keywords:
+                base_score = score / len(keywords)
+                # Boost score if we found any matches
+                boosted_score = min(base_score * 1.5 + (0.3 if score > 0 else 0), 1.0)
                 scores[route] = {
-                    'score': score / len(keywords),
+                    'score': boosted_score,
                     'matched_keywords': matched_keywords,
                     'match_count': score
                 }
@@ -132,6 +149,9 @@ class CoreOrchestrator:
         if scores:
             best_route = max(scores.keys(), key=lambda x: scores[x]['score'])
             best_score = scores[best_route]['score']
+            
+            # Debug logging
+            self.logger.info(f"Keyword analysis for '{user_input}': best_route={best_route}, score={best_score:.2f}, matches={scores[best_route]['matched_keywords']}")
             
             return {
                 'best_route': best_route,
@@ -197,21 +217,19 @@ class CoreOrchestrator:
             }
 
     async def _call_gemini_tool(self, tool_name: str, parameters: Dict[str, Any]) -> str:
-        """Call Gemini via MCP tools."""
+        """Call Gemini via MCP tools using the Gemini MCP client."""
         try:
-            result = await self.mcp_client.call_tool(tool_name, parameters)
-            return result.get('text', result.get('content', ''))
+            # Use Gemini MCP client's chat method for text generation
+            if tool_name == "gemini_generate":
+                prompt = parameters.get('prompt', '')
+                response = await self.gemini_mcp_client.chat(prompt)
+                return response
+            else:
+                # For other MCP tools, use the appropriate method
+                # This will be handled by specific tool implementations
+                raise ValueError(f"Unknown tool: {tool_name}")
         except Exception as e:
-            # Fallback to direct Gemini client if MCP fails
-            if hasattr(self.gemini_client, 'generate_content_async'):
-                response = await self.gemini_client.generate_content_async(
-                    parameters.get('prompt', ''),
-                    generation_config={
-                        'temperature': parameters.get('temperature', 0.7),
-                        'max_output_tokens': parameters.get('max_output_tokens', 1000)
-                    }
-                )
-                return response.text
+            self.logger.error(f"Error calling Gemini MCP tool {tool_name}: {e}")
             raise e
 
     def _parse_ai_classification(self, response: str) -> Dict[str, Any]:

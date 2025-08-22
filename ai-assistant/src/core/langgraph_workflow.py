@@ -6,10 +6,9 @@ from src.core.state_schema import AssistantState, make_initial_state
 from src.core.orchestrator import CoreOrchestrator
 from src.agents.email_agent import EmailAgent
 from src.agents.calendar_agent import CalendarAgent
-from src.agents.task_agent import TaskAgent
-from src.agents.coordinator_agent import CoordinatorAgent
+from src.agents.brave_agent import BraveAgent
+
 from src.mcp_integration.gemini_mcp_client import GeminiMCPClient
-from src.mcp_integration.mcp_client import MCPClient
 
 class AIAssistantWorkflow:
     """
@@ -18,21 +17,34 @@ class AIAssistantWorkflow:
     """
     
     def __init__(self):
-        # Initialize core components
-        self.gemini_client = GeminiMCPClient()
-        self.mcp_client = MCPClient()
-        self.orchestrator = CoreOrchestrator(self.gemini_client, self.mcp_client)
+        # Initialize core components - using only Gemini MCP client
+        self.gemini_mcp_client = GeminiMCPClient()
+        self.orchestrator = CoreOrchestrator(self.gemini_mcp_client)
         
-        # Initialize agents
+        # Flag to track initialization
+        self.initialized = False
+        
+        # Initialize agents with Gemini MCP client
         self.agents = {
-            'email': EmailAgent(self.mcp_client),
-            'calendar': CalendarAgent(self.mcp_client),
-            'task': TaskAgent(self.mcp_client),
-            'coordinator': CoordinatorAgent(self.mcp_client)
+            'email': EmailAgent(self.gemini_mcp_client),
+            'calendar': CalendarAgent(self.gemini_mcp_client),
+            'search': BraveAgent(self.gemini_mcp_client),
         }
         
         # Build the workflow graph
         self.workflow = self._build_workflow()
+    
+    async def initialize_servers(self):
+        """Initialize MCP servers if not already done."""
+        if not self.initialized:
+            try:
+                # Initialize Gemini MCP client with all MCP services
+                await self.gemini_mcp_client.initialize()
+                self.initialized = True
+                print("[SUCCESS] MCP servers initialized successfully")
+            except Exception as e:
+                print(f"[ERROR] MCP server initialization failed: {e}")
+                raise
     
     def _build_workflow(self) -> StateGraph:
         """Build the LangGraph workflow with all nodes and edges."""
@@ -44,8 +56,7 @@ class AIAssistantWorkflow:
         workflow.add_node("route_request", self._route_request)
         workflow.add_node("email_agent", self._execute_email_agent)
         workflow.add_node("calendar_agent", self._execute_calendar_agent)
-        workflow.add_node("task_agent", self._execute_task_agent)
-        workflow.add_node("coordinator_agent", self._execute_coordinator_agent)
+        workflow.add_node("search_agent", self._execute_search_agent)
         workflow.add_node("verify_response", self._verify_response)
         workflow.add_node("fallback_handler", self._handle_fallback)
         
@@ -58,15 +69,14 @@ class AIAssistantWorkflow:
             self._route_decision,
             {
                 "email": "email_agent",
-                "calendar": "calendar_agent", 
-                "task": "task_agent",
-                "coordinator": "coordinator_agent",
+                "calendar": "calendar_agent",
+                "search": "search_agent",
                 "fallback": "fallback_handler"
             }
         )
         
         # Add edges from agents to verification
-        for agent in ["email_agent", "calendar_agent", "task_agent", "coordinator_agent"]:
+        for agent in ["email_agent", "calendar_agent", "search_agent"]: 
             workflow.add_edge(agent, "verify_response")
         
         # Add conditional edges from verification
@@ -121,16 +131,6 @@ class AIAssistantWorkflow:
         """Execute the calendar agent."""
         state['current_agent'] = 'calendar'
         return await self.agents['calendar'].execute_with_tracking(state)
-    
-    async def _execute_task_agent(self, state: AssistantState) -> AssistantState:
-        """Execute the task agent."""
-        state['current_agent'] = 'task'
-        return await self.agents['task'].execute_with_tracking(state)
-    
-    async def _execute_coordinator_agent(self, state: AssistantState) -> AssistantState:
-        """Execute the coordinator agent for complex multi-agent tasks."""
-        state['current_agent'] = 'coordinator'
-        return await self.agents['coordinator'].execute_with_tracking(state)
     
     async def _verify_response(self, state: AssistantState) -> AssistantState:
         """Verify the quality and completeness of the agent response."""
@@ -198,8 +198,8 @@ class AIAssistantWorkflow:
         route = state.get('route', 'fallback')
         confidence = state.get('route_confidence', 0.0)
         
-        # Require minimum confidence for routing
-        if confidence < 0.6:
+        # Require minimum confidence for routing (lowered for testing)
+        if confidence < 0.3:
             return 'fallback'
         
         # Map routes to agent nodes
@@ -252,6 +252,9 @@ class AIAssistantWorkflow:
         Returns:
             Final state with response and metadata
         """
+        # Ensure servers are initialized
+        await self.initialize_servers()
+        
         # Create initial state
         initial_state = make_initial_state(user_input, user)
         
@@ -316,11 +319,9 @@ class AIAssistantWorkflow:
         
         # Check clients
         try:
-            health_status['clients']['gemini'] = 'healthy' if self.gemini_client else 'unhealthy'
-            health_status['clients']['mcp'] = 'healthy' if self.mcp_client else 'unhealthy'
+            health_status['clients']['gemini_mcp'] = 'healthy' if self.gemini_mcp_client else 'unhealthy'
         except:
-            health_status['clients']['gemini'] = 'unhealthy'
-            health_status['clients']['mcp'] = 'unhealthy'
+            health_status['clients']['gemini_mcp'] = 'unhealthy'
         
         return health_status
 

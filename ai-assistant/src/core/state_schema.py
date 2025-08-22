@@ -31,6 +31,7 @@ class AssistantState(TypedDict, total=False):
     token_usage: Dict[str, Any]
     response_time: float
     cache_hits: int
+    mcp_tool_calls: List[Dict[str, Any]]  # Track MCP tool usage
 
     # Output
     final_response: str
@@ -60,5 +61,6 @@ def make_initial_state(user_input: str, user: Optional[str] = None) -> 'Assistan
         token_usage={},
         response_time=0.0,
         cache_hits=0,
+        mcp_tool_calls=[],
         final_response=""
     )
