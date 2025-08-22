@@ -95,7 +95,7 @@ class AIAssistantWorkflow:
         # Fallback always ends
         workflow.add_edge("fallback_handler", END)
         
-        return workflow.compile()
+        return workflow.compile(checkpointer=None, interrupt_before=None, debug=False)
     
     # Node Functions
     async def _route_request(self, state: AssistantState) -> AssistantState:
@@ -256,12 +256,12 @@ class AIAssistantWorkflow:
         quality_score = verification_scores.get('quality', 0.0)
         completeness_score = verification_scores.get('completeness', 0.0)
         
-        # Success criteria
-        if quality_score >= 0.7 and completeness_score >= 0.7:
+        # Success criteria - lower the threshold to avoid infinite retries
+        if quality_score >= 0.5 and completeness_score >= 0.5:
             return 'success'
         
-        # Retry logic (max 2 retries)
-        if retry_count < 2 and quality_score >= 0.4:
+        # Retry logic (max 1 retry to prevent infinite loops)
+        if retry_count < 1 and quality_score >= 0.3:
             state['retry_count'] = retry_count + 1
             return 'retry'
         
@@ -292,8 +292,11 @@ class AIAssistantWorkflow:
         # Create initial state
         initial_state = make_initial_state(user_input, user)
         
-        # Execute the workflow
-        final_state = await self.workflow.ainvoke(initial_state)
+        # Execute the workflow with recursion limit
+        final_state = await self.workflow.ainvoke(
+            initial_state,
+            config={"recursion_limit": 10}
+        )
         
         return final_state
     
@@ -311,8 +314,11 @@ class AIAssistantWorkflow:
         # Create initial state
         initial_state = make_initial_state(user_input, user)
         
-        # Stream the workflow execution
-        async for state_update in self.workflow.astream(initial_state):
+        # Stream the workflow execution with recursion limit
+        async for state_update in self.workflow.astream(
+            initial_state,
+            config={"recursion_limit": 10}
+        ):
             yield state_update
     
     def get_workflow_graph(self) -> str:
