@@ -9,7 +9,7 @@ from src.agents.calendar_agent import CalendarAgent
 from src.agents.task_agent import TaskAgent
 from src.agents.coordinator_agent import CoordinatorAgent
 from src.mcp_integration.gemini_mcp_client import GeminiMCPClient
-from src.mcp_integration import MCPClient
+from src.mcp_integration.mcp_client import MCPClient
 
 class AIAssistantWorkflow:
     """
