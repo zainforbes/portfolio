@@ -66,6 +66,7 @@ if prompt := st.chat_input("Ask me about your calendar or emails..."):
             try:
                 # Run the workflow
                 result_state = asyncio.run(workflow.process_request(prompt))
+                print("DEBUG: result_state =", result_state)
                 
                 # Extract response
                 response = result_state.get('final_response', 'No response generated')
