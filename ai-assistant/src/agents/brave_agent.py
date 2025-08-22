@@ -185,15 +185,21 @@ Focus on improving search effectiveness."""
                 # Fallback: try direct search through Gemini MCP client
                 search_results = await self.gemini_mcp_client._search_web(query, 10)
             
-            # Process and analyze results
-            processed_results = await self._process_search_results(search_results, query)
-            
-            # Generate response
-            response = await self._generate_search_response(query, processed_results)
+            # Check if we got a fallback response instead of search results
+            if search_results.get('search_unavailable'):
+                response = f"**Search Results for '{query}'**\n\n"
+                response += search_results.get('message', 'Search temporarily unavailable') + "\n\n"
+                response += search_results.get('fallback_response', 'No additional information available.')
+            else:
+                # Process and analyze results
+                processed_results = await self._process_search_results(search_results, query)
+                
+                # Generate response
+                response = await self._generate_search_response(query, processed_results)
             
             # Update state
             state['final_response'] = response
-            state['search_results'] = processed_results
+            state['search_results'] = search_results.get('results', []) if not search_results.get('search_unavailable') else []
             state['search_query'] = query
             state['task_type'] = 'web_search'
             

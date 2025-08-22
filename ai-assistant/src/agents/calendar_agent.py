@@ -205,7 +205,7 @@ Focus on actionable insights that help improve productivity and work-life balanc
             
             # Create the event using MCP calendar tools
             event_result = await self.use_tool(
-                "create_event", 
+                "create_calendar_event", 
                 {
                     "title": event_details['title'],
                     "start_time": event_details.get('start_time', self._get_default_start_time()),
@@ -256,7 +256,7 @@ Event ID: {event_result.get('event_id', 'N/A')}
             
             # Get events using MCP calendar tools
             events_result = await self.use_tool(
-                "list_events",
+                "list_calendar_events",
                 {"days_ahead": days_ahead}
             )
             
@@ -304,7 +304,7 @@ Event ID: {event_result.get('event_id', 'N/A')}
         try:
             # Get recent events for analysis
             events_result = await self.use_tool(
-                "list_events",
+                "list_calendar_events",
                 {"days_ahead": 7}
             )
             
@@ -340,7 +340,7 @@ Event ID: {event_result.get('event_id', 'N/A')}
             
             # Get current events for the requested period
             events_result = await self.use_tool(
-                "list_events",
+                "list_calendar_events",
                 {"days_ahead": time_preference.get('days_ahead', 7)}
             )
             
@@ -375,7 +375,7 @@ Event ID: {event_result.get('event_id', 'N/A')}
         try:
             # Get current events
             events_result = await self.use_tool(
-                "list_events",
+                "list_calendar_events",
                 {"days_ahead": 14}
             )
             
@@ -413,7 +413,7 @@ Event ID: {event_result.get('event_id', 'N/A')}
         try:
             # Get events for optimization analysis
             events_result = await self.use_tool(
-                "list_events",
+                "list_calendar_events",
                 {"days_ahead": 7}
             )
             

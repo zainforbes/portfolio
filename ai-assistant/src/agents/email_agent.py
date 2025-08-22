@@ -195,12 +195,21 @@ Keep summaries under 100 words but capture all critical information.""",
                 "query": "is:unread"
             })
             
+            # Check for tool errors
+            if 'error' in emails:
+                return self._add_agent_message(state, f"Unable to access emails: {emails['error']}", "error")
+            
             classifications = []
             for email in emails.get('messages', []):
                 # Get email details
                 email_data = await self.use_tool("gmail_get_message", {
                     "message_id": email['id']
                 })
+                
+                # Skip if email data has errors
+                if 'error' in email_data:
+                    self.logger.warning(f"Failed to get email {email['id']}: {email_data['error']}")
+                    continue
                 
                 # Classify the email
                 classification = await self._classify_single_email(email_data)
