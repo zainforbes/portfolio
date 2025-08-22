@@ -1,222 +1,391 @@
-# src/core/langgraph_workflow.py
-"""
-LangGraph-style workflow foundation.
+# src/langgraph_workflow.py
+from langgraph.graph import StateGraph, END
+from typing import Dict, Any, Optional
 
-This module exposes AssistantGraph which builds a small state graph:
-  - classify_request_node: uses GeminiClient.classify(...) to pick an agent
-  - agent_router_node: sets route and optionally calls an agent handler
-  - verification_node: minimal verification stub
-  - response_generator_node: composes final_response
-
-The graph uses `langgraph.StateGraph` if present; otherwise it falls back
-to an internal SimpleStateGraph which executes nodes in sequence.
-
-AssistantGraph accepts optional agent handler functions (dict mapping agent name -> callable)
-so you can wire real agent execute functions later.
-"""
-
-from typing import Callable, Dict, Any, Optional
 from src.core.state_schema import AssistantState, make_initial_state
+from src.core.orchestrator import CoreOrchestrator
+from src.agents.email_agent import EmailAgent
+from src.agents.calendar_agent import CalendarAgent
+from src.agents.task_agent import TaskAgent
+from src.agents.coordinator_agent import CoordinatorAgent
+from src.mcp_integration.gemini_mcp_client import GeminiMCPClient
+from src.mcp_integration import MCPClient
 
-# Try to import langgraph; if not installed, use fallback
-try:
-    from langgraph import StateGraph  # type: ignore
-    _HAS_LANGGRAPH = True
-except Exception:
-    _HAS_LANGGRAPH = False
-
-# Import your LLM wrapper (Gemini) — expects a classify() method
-try:
-    from src.utils.gemini_client import GeminiClient
-except Exception:
-    # best-effort fallback: a tiny internal classifier if your llm client is not present
-    class _FallbackGemini:
-        def classify(self, text: str) -> dict:
-            t = text.lower()
-            if any(k in t for k in ("email", "inbox", "mail")):
-                return {"agent": "email", "confidence": 0.95, "reason": "keyword_fallback"}
-            if any(k in t for k in ("calendar", "meeting", "schedule")):
-                return {"agent": "calendar", "confidence": 0.95, "reason": "keyword_fallback"}
-            if any(k in t for k in ("task", "todo", "remind", "add task")):
-                return {"agent": "task", "confidence": 0.95, "reason": "keyword_fallback"}
-            return {"agent": "coordinator", "confidence": 0.6, "reason": "fallback"}
-    GeminiClient = _FallbackGemini  # type: ignore
-
-# --- Fallback SimpleStateGraph if langgraph not installed ---
-class SimpleStateGraph:
+class AIAssistantWorkflow:
     """
-    Very small state graph runner:
-      - nodes is an ordered list of (name, function)
-      - each node is called with the state object and may mutate and return state
-      - this is intentionally sequential and simple for quick testing
+    LangGraph workflow for the AI Assistant system.
+    Manages agent routing, state transitions, and orchestration.
     """
+    
     def __init__(self):
-        self.nodes = []
-
-    def add_node(self, name: str, fn: Callable[[AssistantState], AssistantState]):
-        self.nodes.append((name, fn))
-
-    def run(self, state: AssistantState) -> AssistantState:
-        for name, fn in self.nodes:
-            state = fn(state) or state
-        return state
-
-# --- Node implementations ---
-def classify_request_node_factory(llm_client: Any):
-    """
-    Returns a node function that classifies user_input using llm_client.classify(...)
-    and updates the state with routing fields.
-    """
-    def node(state: AssistantState) -> AssistantState:
-        text = state.get("user_input", "") or ""
-        try:
-            res = llm_client.classify(text)
-            agent = res.get("agent") or res.get("agent_selection") or "coordinator"
-            confidence = float(res.get("confidence", 0.0))
-            reason = res.get("reason", "") or res.get("reasoning", "")
-        except Exception as e:
-            agent, confidence, reason = "coordinator", 0.0, f"classify_error: {e}"
-
-        state["task_type"] = agent
-        state["current_agent"] = agent
-        state["confidence_score"] = confidence
-        state["route"] = agent
-        state["route_confidence"] = confidence
-        state["route_reason"] = reason
-        # append to conversation history for traceability
-        hist = state.get("conversation_history", [])
-        hist.append({"system": f"classified route -> {agent} (conf={confidence:.2f})", "raw_reason": reason})
-        state["conversation_history"] = hist
-        return state
-    return node
-
-def agent_router_node_factory(agent_handlers: Optional[Dict[str, Callable[[AssistantState], AssistantState]]] = None):
-    """
-    Router node: validates chosen agent and (optionally) dispatches the request
-    to the registered handler, if available. If handler exists, it will be called
-    and its result placed into state['agent_result'].
-    """
-    handlers = agent_handlers or {}
-    def node(state: AssistantState) -> AssistantState:
-        agent = state.get("task_type", "") or state.get("current_agent", "")
-        if not agent:
-            state["final_response"] = "No agent selected."
-            return state
-
-        # If a handler is registered for this agent, call it and capture the result
-        handler = handlers.get(agent)
-        if handler:
-            try:
-                result = handler(state)
-                # handler may return a dict or AssistantState-like updates
-                state["agent_result"] = result
-                # optionally, if result contains 'response', set final_response
-                if isinstance(result, dict) and "response" in result:
-                    state["final_response"] = result["response"]
-            except Exception as e:
-                state["error_log"].append({"node": "agent_router", "error": str(e)})
-                state["final_response"] = f"Agent {agent} failed: {e}"
-        else:
-            # no handler — fill with a placeholder response
-            state["final_response"] = f"(placeholder) routed to {agent}. Enable agent implementation to perform actions."
-        # audit
-        hist = state.get("conversation_history", [])
-        hist.append({"system": f"routed to {agent}", "agent": agent})
-        state["conversation_history"] = hist
-        return state
-    return node
-
-def verification_node(state: AssistantState) -> AssistantState:
-    """
-    Simple verification stub. For now set verification_scores with route confidence.
-    """
-    conf = float(state.get("confidence_score", 0.0))
-    state["verification_scores"] = {"route_confidence": conf, "verified": conf >= 0.7}
-    hist = state.get("conversation_history", [])
-    hist.append({"system": f"verification: verified={state['verification_scores']['verified']}"})
-    state["conversation_history"] = hist
-    return state
-
-def response_generator_node(state: AssistantState) -> AssistantState:
-    """
-    Final response generator. If an agent_result with 'response' exists, return it;
-    otherwise craft a default message.
-    """
-    if "final_response" in state and state["final_response"]:
-        return state
-    # Try agent_result
-    res = state.get("agent_result")
-    if isinstance(res, dict) and "response" in res:
-        state["final_response"] = res["response"]
-        return state
-    # Fallback default
-    agent = state.get("task_type", "coordinator")
-    state["final_response"] = f"No agent action taken. Request routed to `{agent}`."
-    return state
-
-# --- AssistantGraph wrapper ---
-class AssistantGraph:
-    """
-    Builds and runs the small workflow:
-      classify_request_node -> verification_node -> agent_router_node -> response_generator_node
-
-    Optional agent_handlers: dict mapping agent_name -> callable(state) -> dict
-    """
-    def __init__(self, llm_client: Optional[Any] = None, agent_handlers: Optional[Dict[str, Callable[[AssistantState], Any]]] = None):
-        self.llm = llm_client or GeminiClient()
-        self.agent_handlers = agent_handlers or {}
-        # Use langgraph.StateGraph if present
-        if _HAS_LANGGRAPH:
-            # Minimal wiring for langgraph: create nodes as callables
-            self.graph = StateGraph()
-            self.graph.add_node("classify", classify_request_node_factory(self.llm))
-            self.graph.add_node("verify", verification_node)
-            self.graph.add_node("route", agent_router_node_factory(self.agent_handlers))
-            self.graph.add_node("respond", response_generator_node)
-            # Define simple linear transitions (StateGraph may support richer)
-            self.order = ["classify", "verify", "route", "respond"]
-            self._use_langgraph = True
-        else:
-            self.graph = SimpleStateGraph()
-            self.graph.add_node("classify", classify_request_node_factory(self.llm))
-            self.graph.add_node("verify", verification_node)
-            self.graph.add_node("route", agent_router_node_factory(self.agent_handlers))
-            self.graph.add_node("respond", response_generator_node)
-            self.order = ["classify", "verify", "route", "respond"]
-            self._use_langgraph = False
-
-    def run(self, user_input: str, initial_state: Optional[AssistantState] = None) -> AssistantState:
-        """
-        Run the graph synchronously. Returns the final AssistantState dict.
-        """
-        state = initial_state or make_initial_state(user_input)
-        # ensure fields exist
-        if "error_log" not in state:
-            state["error_log"] = []
-        # Execute nodes in order
-        final = self.graph.run(state)
-        return final
-
-    # convenience: run and return core results
-    def invoke(self, user_input: str) -> Dict[str, Any]:
-        final_state = self.run(user_input)
-        return {
-            "route": final_state.get("route"),
-            "route_confidence": final_state.get("route_confidence"),
-            "final_response": final_state.get("final_response"),
-            "state": final_state
+        # Initialize core components
+        self.gemini_client = GeminiMCPClient()
+        self.mcp_client = MCPClient()
+        self.orchestrator = CoreOrchestrator(self.gemini_client, self.mcp_client)
+        
+        # Initialize agents
+        self.agents = {
+            'email': EmailAgent(self.mcp_client),
+            'calendar': CalendarAgent(self.mcp_client),
+            'task': TaskAgent(self.mcp_client),
+            'coordinator': CoordinatorAgent(self.mcp_client)
         }
+        
+        # Build the workflow graph
+        self.workflow = self._build_workflow()
+    
+    def _build_workflow(self) -> StateGraph:
+        """Build the LangGraph workflow with all nodes and edges."""
+        
+        # Create the graph
+        workflow = StateGraph(AssistantState)
+        
+        # Add nodes
+        workflow.add_node("route_request", self._route_request)
+        workflow.add_node("email_agent", self._execute_email_agent)
+        workflow.add_node("calendar_agent", self._execute_calendar_agent)
+        workflow.add_node("task_agent", self._execute_task_agent)
+        workflow.add_node("coordinator_agent", self._execute_coordinator_agent)
+        workflow.add_node("verify_response", self._verify_response)
+        workflow.add_node("fallback_handler", self._handle_fallback)
+        
+        # Set entry point
+        workflow.set_entry_point("route_request")
+        
+        # Add conditional edges from router
+        workflow.add_conditional_edges(
+            "route_request",
+            self._route_decision,
+            {
+                "email": "email_agent",
+                "calendar": "calendar_agent", 
+                "task": "task_agent",
+                "coordinator": "coordinator_agent",
+                "fallback": "fallback_handler"
+            }
+        )
+        
+        # Add edges from agents to verification
+        for agent in ["email_agent", "calendar_agent", "task_agent", "coordinator_agent"]:
+            workflow.add_edge(agent, "verify_response")
+        
+        # Add conditional edges from verification
+        workflow.add_conditional_edges(
+            "verify_response",
+            self._verification_decision,
+            {
+                "success": END,
+                "retry": "route_request",
+                "fallback": "fallback_handler"
+            }
+        )
+        
+        # Fallback always ends
+        workflow.add_edge("fallback_handler", END)
+        
+        return workflow.compile()
+    
+    # Node Functions
+    async def _route_request(self, state: AssistantState) -> AssistantState:
+        """Route the user request to appropriate agent."""
+        try:
+            # Use orchestrator for intelligent routing
+            route_result = await self.orchestrator.route_request(state['user_input'])
+            
+            # Update state with routing information
+            state['route'] = route_result['route']
+            state['route_confidence'] = route_result['confidence']
+            state['route_reason'] = route_result['reason']
+            state['task_type'] = route_result.get('task_type', 'general')
+            
+            return state
+            
+        except Exception as e:
+            # Handle routing errors
+            error_log = state.get('error_log', [])
+            error_log.append({
+                'stage': 'routing',
+                'error': str(e),
+                'timestamp': self._get_timestamp()
+            })
+            state['error_log'] = error_log
+            state['route'] = 'fallback'
+            return state
+    
+    async def _execute_email_agent(self, state: AssistantState) -> AssistantState:
+        """Execute the email agent."""
+        state['current_agent'] = 'email'
+        return await self.agents['email'].execute_with_tracking(state)
+    
+    async def _execute_calendar_agent(self, state: AssistantState) -> AssistantState:
+        """Execute the calendar agent."""
+        state['current_agent'] = 'calendar'
+        return await self.agents['calendar'].execute_with_tracking(state)
+    
+    async def _execute_task_agent(self, state: AssistantState) -> AssistantState:
+        """Execute the task agent."""
+        state['current_agent'] = 'task'
+        return await self.agents['task'].execute_with_tracking(state)
+    
+    async def _execute_coordinator_agent(self, state: AssistantState) -> AssistantState:
+        """Execute the coordinator agent for complex multi-agent tasks."""
+        state['current_agent'] = 'coordinator'
+        return await self.agents['coordinator'].execute_with_tracking(state)
+    
+    async def _verify_response(self, state: AssistantState) -> AssistantState:
+        """Verify the quality and completeness of the agent response."""
+        try:
+            # Use orchestrator for response verification
+            verification_result = await self.orchestrator.verify_response(
+                state['user_input'],
+                state.get('final_response', ''),
+                state.get('current_agent', '')
+            )
+            
+            # Update verification scores
+            state['verification_scores'] = verification_result
+            
+            return state
+            
+        except Exception as e:
+            # Handle verification errors
+            error_log = state.get('error_log', [])
+            error_log.append({
+                'stage': 'verification',
+                'error': str(e),
+                'timestamp': self._get_timestamp()
+            })
+            state['error_log'] = error_log
+            
+            # Default to fallback on verification errors
+            state['verification_scores'] = {'quality': 0.0, 'completeness': 0.0}
+            return state
+    
+    async def _handle_fallback(self, state: AssistantState) -> AssistantState:
+        """Handle fallback scenarios when other agents fail."""
+        try:
+            # Use orchestrator for fallback response
+            fallback_response = await self.orchestrator.handle_fallback(
+                state['user_input'],
+                state.get('error_log', [])
+            )
+            
+            state['final_response'] = fallback_response
+            state['fallback_triggered'] = True
+            state['current_agent'] = 'fallback'
+            
+            return state
+            
+        except Exception as e:
+            # Last resort fallback
+            state['final_response'] = "I apologize, but I'm unable to process your request at the moment. Please try again later."
+            state['fallback_triggered'] = True
+            state['current_agent'] = 'fallback'
+            
+            error_log = state.get('error_log', [])
+            error_log.append({
+                'stage': 'fallback',
+                'error': str(e),
+                'timestamp': self._get_timestamp()
+            })
+            state['error_log'] = error_log
+            
+            return state
+    
+    # Decision Functions
+    def _route_decision(self, state: AssistantState) -> str:
+        """Determine which agent should handle the request."""
+        route = state.get('route', 'fallback')
+        confidence = state.get('route_confidence', 0.0)
+        
+        # Require minimum confidence for routing
+        if confidence < 0.6:
+            return 'fallback'
+        
+        # Map routes to agent nodes
+        route_mapping = {
+            'email': 'email',
+            'calendar': 'calendar',
+            'task': 'task',
+            'multi_agent': 'coordinator',
+            'complex': 'coordinator'
+        }
+        
+        return route_mapping.get(route, 'fallback')
+    
+    def _verification_decision(self, state: AssistantState) -> str:
+        """Determine next step based on verification results."""
+        verification_scores = state.get('verification_scores', {})
+        retry_count = state.get('retry_count', 0)
+        
+        # Check if response quality is acceptable
+        quality_score = verification_scores.get('quality', 0.0)
+        completeness_score = verification_scores.get('completeness', 0.0)
+        
+        # Success criteria
+        if quality_score >= 0.7 and completeness_score >= 0.7:
+            return 'success'
+        
+        # Retry logic (max 2 retries)
+        if retry_count < 2 and quality_score >= 0.4:
+            state['retry_count'] = retry_count + 1
+            return 'retry'
+        
+        # Fallback for poor quality or too many retries
+        return 'fallback'
+    
+    # Utility Functions
+    def _get_timestamp(self) -> str:
+        """Get current timestamp in ISO format."""
+        from datetime import datetime
+        return datetime.utcnow().isoformat()
+    
+    # Public Interface
+    async def process_request(self, user_input: str, user: Optional[str] = None) -> AssistantState:
+        """
+        Process a user request through the complete workflow.
+        
+        Args:
+            user_input: The user's request
+            user: Optional user identifier
+            
+        Returns:
+            Final state with response and metadata
+        """
+        # Create initial state
+        initial_state = make_initial_state(user_input, user)
+        
+        # Execute the workflow
+        final_state = await self.workflow.ainvoke(initial_state)
+        
+        return final_state
+    
+    async def stream_process(self, user_input: str, user: Optional[str] = None):
+        """
+        Stream the workflow execution for real-time updates.
+        
+        Args:
+            user_input: The user's request
+            user: Optional user identifier
+            
+        Yields:
+            State updates throughout the workflow execution
+        """
+        # Create initial state
+        initial_state = make_initial_state(user_input, user)
+        
+        # Stream the workflow execution
+        async for state_update in self.workflow.astream(initial_state):
+            yield state_update
+    
+    def get_workflow_graph(self) -> str:
+        """Get a visual representation of the workflow graph."""
+        try:
+            return self.workflow.get_graph().draw_mermaid()
+        except:
+            return "Workflow graph visualization not available"
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """
+        Perform a health check on all system components.
+        
+        Returns:
+            Health status of all components
+        """
+        health_status = {
+            'workflow': 'healthy',
+            'orchestrator': 'unknown',
+            'agents': {},
+            'clients': {}
+        }
+        
+        try:
+            # Check orchestrator
+            orchestrator_status = await self.orchestrator.health_check()
+            health_status['orchestrator'] = 'healthy' if orchestrator_status else 'unhealthy'
+        except:
+            health_status['orchestrator'] = 'unhealthy'
+        
+        # Check agents
+        for agent_name, agent in self.agents.items():
+            try:
+                agent_status = agent.get_status()
+                health_status['agents'][agent_name] = 'healthy' if agent_status['status'] == 'active' else 'unhealthy'
+            except:
+                health_status['agents'][agent_name] = 'unhealthy'
+        
+        # Check clients
+        try:
+            health_status['clients']['gemini'] = 'healthy' if self.gemini_client else 'unhealthy'
+            health_status['clients']['mcp'] = 'healthy' if self.mcp_client else 'unhealthy'
+        except:
+            health_status['clients']['gemini'] = 'unhealthy'
+            health_status['clients']['mcp'] = 'unhealthy'
+        
+        return health_status
 
-# Node-level unit testing helper (optional)
-def _example_agent_handler_task(state: AssistantState) -> Dict[str, Any]:
+
+# Convenience function for easy usage
+async def process_user_request(user_input: str, user: Optional[str] = None) -> str:
     """
-    Example synchronous handler for 'task' requests (used in tests/demo).
-    This writes a minimal 'response' field — in real code you'd call MCP to persist the task.
+    Simplified interface to process a user request and get a response.
+    
+    Args:
+        user_input: The user's request
+        user: Optional user identifier
+        
+    Returns:
+        The assistant's response
     """
-    text = state.get("user_input", "")
-    # Extract naive task text
-    if ":" in text:
-        task_text = text.split(":", 1)[1].strip()
-    else:
-        task_text = text
-    return {"response": f"Task handler saved task: {task_text}"}
+    workflow = AIAssistantWorkflow()
+    result_state = await workflow.process_request(user_input, user)
+    return result_state.get('final_response', 'No response generated')
+
+
+# Example usage and testing
+if __name__ == "__main__":
+    import asyncio
+    
+    async def test_workflow():
+        """Test the workflow with sample requests."""
+        workflow = AIAssistantWorkflow()
+        
+        test_requests = [
+            "Help me organize my emails",
+            "Schedule a meeting for tomorrow at 2 PM",
+            "What are my priority tasks for today?",
+            "Send an email to john@company.com about the project update"
+        ]
+        
+        print("🚀 Testing AI Assistant Workflow\n")
+        
+        for request in test_requests:
+            print(f"📝 Request: {request}")
+            
+            try:
+                result = await workflow.process_request(request)
+                print(f"✅ Response: {result.get('final_response', 'No response')}")
+                print(f"🔀 Route: {result.get('route', 'unknown')} (confidence: {result.get('route_confidence', 0):.2f})")
+                print(f"🤖 Agent: {result.get('current_agent', 'unknown')}")
+                
+                if result.get('error_log'):
+                    print(f"⚠️ Errors: {len(result['error_log'])}")
+                
+            except Exception as e:
+                print(f"❌ Error: {e}")
+            
+            print("-" * 50)
+        
+        # Health check
+        print("\n🏥 System Health Check:")
+        health = await workflow.health_check()
+        for component, status in health.items():
+            if isinstance(status, dict):
+                print(f"  {component}:")
+                for sub_component, sub_status in status.items():
+                    print(f"    {sub_component}: {sub_status}")
+            else:
+                print(f"  {component}: {status}")
+    
+    # Run the test
+    asyncio.run(test_workflow())

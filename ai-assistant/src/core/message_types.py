@@ -1,3 +1,4 @@
+# src/core/message_types.py
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -61,3 +62,21 @@ class MessageTypes:
     DATA_REQUEST = "data_request"
     DATA_RESPONSE = "data_response"
     UPDATE_NOTIFICATION = "update_notification"
+    
+    # Email-specific messages
+    EMAIL_CLASSIFY = "email_classify"
+    EMAIL_COMPOSE = "email_compose"
+    EMAIL_SEND = "email_send"
+    EMAIL_ORGANIZE = "email_organize"
+    
+    # Calendar-specific messages
+    CALENDAR_SCHEDULE = "calendar_schedule"
+    CALENDAR_RESCHEDULE = "calendar_reschedule"
+    CALENDAR_CANCEL = "calendar_cancel"
+    CALENDAR_CHECK_AVAILABILITY = "calendar_check_availability"
+    
+    # Task-specific messages
+    TASK_CREATE = "task_create"
+    TASK_UPDATE = "task_update"
+    TASK_PRIORITIZE = "task_prioritize"
+    TASK_COMPLETE = "task_complete"
