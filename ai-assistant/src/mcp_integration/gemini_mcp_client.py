@@ -101,6 +101,14 @@ class GeminiMCPClient:
             self.search_tools = SearchTools(self)
             await self.search_tools.start()
             print("[OK] Search tools initialized")
+        except ImportError as e:
+            print(f"[ERROR] Missing dependency for search tools: {e}")
+            print("[INFO] Install httpx with: pip install httpx")
+            self.search_tools = None
+        except ValueError as e:
+            print(f"[ERROR] Search tools configuration error: {e}")
+            print("[INFO] Make sure BRAVE_API_KEY is set in your .env file")
+            self.search_tools = None
         except Exception as e:
             print(f"[WARNING] Search tools initialization failed: {e}")
             self.search_tools = None
@@ -338,13 +346,30 @@ Response:
     
     # MCP Service Implementations
     async def _search_web(self, query: str, count: int = 10) -> Dict[str, Any]:
-        """Search web using Brave Search API"""
+        """Search web using Brave Search API with fallback"""
         try:
-            if not self.search_tools:
-                return {"error": "Search tools not initialized"}
-            
-            result = await self.search_tools.web_search(query, count)
-            return result
+            if self.search_tools:
+                result = await self.search_tools.web_search(query, count)
+                return result
+            else:
+                # Fallback: Generate a helpful response using Gemini
+                fallback_prompt = f"""
+                I cannot perform a web search for "{query}" due to search service limitations.
+                However, I can provide you with general information about this topic based on my training data.
+                Please provide helpful information about: {query}
+                
+                If this is a current event or recent information, please let the user know that web search is temporarily unavailable and suggest they check reliable news sources or official websites.
+                """
+                
+                response = await self.chat(fallback_prompt)
+                return {
+                    "query": query,
+                    "results": [],
+                    "fallback_response": response,
+                    "search_unavailable": True,
+                    "message": "Web search temporarily unavailable. Provided general information instead."
+                }
+                
         except Exception as e:
             return {"error": f"Search failed: {str(e)}"}
     
@@ -715,6 +740,21 @@ Response:
         except HttpError as e:
             error_msg = f"Calendar API error: {e}"
             print(f"[ERROR] {error_msg}")
+            
+            # Check if it's an insufficient permissions error
+            if "insufficientPermissions" in str(e) or "Insufficient Permission" in str(e):
+                print("[WARN] Calendar API permissions insufficient. Please re-authenticate with Calendar access.")
+                # Delete the existing token to force re-authentication on next run
+                token_path = "config/gmail_token.pickle"
+                if os.path.exists(token_path):
+                    try:
+                        os.remove(token_path)
+                        print("[OK] Removed old credentials - please restart to re-authenticate")
+                    except Exception as delete_error:
+                        print(f"[WARN] Could not remove token file: {delete_error}")
+                        
+                return {"error": "Calendar API permissions insufficient. Please re-authenticate by restarting the application."}
+            
             return {"error": error_msg}
         except Exception as e:
             error_msg = f"Calendar listing failed: {str(e)}"

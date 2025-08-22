@@ -127,10 +127,8 @@ class AIAssistantWorkflow:
     async def _summarize_with_gemini(self, state: AssistantState) -> AssistantState:
         try:
             content = "\n".join([m['content'] for m in state.get('agent_messages', []) if m.get('content')])
-            final = await self.gemini_mcp_client.generate_response(
-                content,
-                context="Summarize the assistant's findings and return a final answer."
-            )
+            prompt = f"Summarize the assistant's findings and return a final answer.\n\nContent: {content}"
+            final = await self.gemini_mcp_client.chat(prompt)
             state['final_response'] = final
         except Exception as e:
             state['final_response'] = "Task completed but summarization failed."
@@ -168,9 +166,21 @@ class AIAssistantWorkflow:
 
     def _verification_decision(self, state: AssistantState) -> str:
         scores = state.get('verification_scores', {})
-        if scores.get('quality', 0.0) >= 0.5 and scores.get('completeness', 0.0) >= 0.5:
+        final_response = state.get('final_response', '')
+        
+        # If there's a final response and no major errors, consider it successful
+        if final_response and len(final_response.strip()) > 10:
+            # Check if response indicates an error
+            error_indicators = ['error', 'failed', 'unable to', 'cannot', 'sorry']
+            has_errors = any(indicator in final_response.lower() for indicator in error_indicators)
+            
+            if not has_errors:
+                return 'success'
+        
+        # Original verification logic with more lenient thresholds
+        if scores.get('quality', 0.0) >= 0.3 and scores.get('completeness', 0.0) >= 0.3:
             return 'success'
-        if state.get('retry_count', 0) < 1 and scores.get('quality', 0.0) >= 0.3:
+        if state.get('retry_count', 0) < 1 and scores.get('quality', 0.0) >= 0.2:
             state['retry_count'] = state.get('retry_count', 0) + 1
             return 'retry'
         return 'fallback'

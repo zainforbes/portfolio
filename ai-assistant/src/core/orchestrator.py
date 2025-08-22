@@ -230,7 +230,40 @@ class CoreOrchestrator:
             return {'quality': 0.0, 'completeness': 0.0}
 
     async def handle_fallback(self, user_input: str, error_log: List[Dict[str, Any]]) -> str:
-        return "I'm sorry, I couldn't handle that request. Can you rephrase or try again later?"
+        """Enhanced fallback handler that provides helpful responses based on input."""
+        try:
+            # Analyze the user input to provide contextual help
+            fallback_prompt = f"""
+            The user asked: "{user_input}"
+            
+            I couldn't route this to a specific agent, but I should still be helpful.
+            Please provide a useful response that:
+            1. Acknowledges what they're trying to do
+            2. Explains what I can help with instead
+            3. Suggests how they could rephrase their request
+            4. Offers specific examples of what I can do
+            
+            My capabilities include:
+            - Email management (reading, organizing, composing emails)
+            - Calendar management (scheduling, viewing events, finding availability)
+            - Web search and research (finding information online)
+            
+            Be friendly and helpful while guiding them toward a request I can handle.
+            """
+            
+            helpful_response = await self.gemini_mcp_client.chat(fallback_prompt)
+            return helpful_response
+            
+        except Exception as e:
+            self.logger.error(f"Fallback handler error: {e}")
+            return f"""I'm sorry, I couldn't process your request: "{user_input}"
+
+However, I can help you with:
+• 📧 **Email tasks**: "show my unread emails" or "classify my emails by priority"  
+• 📅 **Calendar tasks**: "show my upcoming events" or "when am I free tomorrow?"
+• 🔍 **Search tasks**: "search for information about [topic]"
+
+Could you try rephrasing your request using one of these examples?"""
 
     async def health_check(self) -> bool:
         try:
