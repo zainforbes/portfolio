@@ -37,11 +37,6 @@ class CoreOrchestrator:
                 'book', 'reschedule', 'cancel', 'availability', 'time',
                 'date', 'tomorrow', 'today', 'next week'
             ],
-            'task': [
-                'task', 'todo', 'priority', 'deadline', 'project',
-                'complete', 'finish', 'work on', 'assignment',
-                'deliverable', 'milestone', 'progress'
-            ],
             'search': [
                 'search', 'find', 'look up', 'research', 'investigate',
                 'what is', 'who is', 'how to', 'when did', 'where is',
@@ -175,7 +170,7 @@ class CoreOrchestrator:
             Analyze this user request and classify it into one of these categories:
             - email: Email management, composition, reading, organizing
             - calendar: Scheduling, meetings, appointments, time management
-            - task: Task management, priorities, project work, deadlines
+            - search: Information search, research, web browsing
             - multi_agent: Complex requests requiring multiple agents
             - fallback: Unclear or unsupported requests
             
@@ -500,9 +495,69 @@ class CoreOrchestrator:
 I can help you with:
 • Email management (organizing, composing, prioritizing)
 • Calendar scheduling (meetings, appointments, availability)
-• Task management (priorities, deadlines, organization)
+• Web search and research (finding information, browsing)
 
 Could you try rephrasing your request or let me know which of these areas you'd like help with?"""
+
+    async def process_complex_request(self, user_input: str, task_type: str = 'general') -> Dict[str, Any]:
+        """
+        Process complex requests that may require multiple agents or orchestration.
+        
+        Args:
+            user_input: The user's request
+            task_type: Type of task (general, multi_agent, complex, etc.)
+            
+        Returns:
+            Response and metadata from orchestrator processing
+        """
+        try:
+            # Create orchestrator prompt for complex requests
+            orchestrator_prompt = f"""
+            You are handling a complex request that requires careful orchestration:
+            
+            User Request: "{user_input}"
+            Task Type: {task_type}
+            
+            This request was routed to the orchestrator because it may require:
+            - Multiple agent coordination
+            - Complex reasoning
+            - Integration of different services
+            - Fallback handling
+            
+            Provide a comprehensive response that addresses the user's needs.
+            Be helpful, informative, and suggest specific actions they can take.
+            """
+            
+            response = await self._call_gemini_tool(
+                "gemini_generate",
+                {
+                    "prompt": orchestrator_prompt,
+                    "temperature": 0.7,
+                    "max_output_tokens": 1000
+                }
+            )
+            
+            return {
+                'response': response,
+                'metadata': {
+                    'processing_method': 'orchestrator',
+                    'task_type': task_type,
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'complexity_level': 'high'
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Complex request processing failed: {e}")
+            return {
+                'response': self._get_default_fallback_response(),
+                'metadata': {
+                    'processing_method': 'orchestrator_fallback',
+                    'task_type': task_type,
+                    'error': str(e),
+                    'timestamp': datetime.utcnow().isoformat()
+                }
+            }
 
     async def health_check(self) -> bool:
         """

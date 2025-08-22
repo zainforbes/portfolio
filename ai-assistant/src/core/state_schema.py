@@ -14,7 +14,7 @@ class AssistantState(TypedDict, total=False):
     # Agent Communication
     agent_messages: List[Dict[str, Any]]  # message audit trail
     pending_requests: List[Dict[str, Any]]
-    completed_tasks: List[Dict[str, Any]]
+    completed_actions: List[Dict[str, Any]]
 
     # Context & Memory
     conversation_history: List[Dict[str, Any]]
@@ -50,7 +50,7 @@ def make_initial_state(user_input: str, user: Optional[str] = None) -> 'Assistan
         route_reason="",
         agent_messages=[],
         pending_requests=[],
-        completed_tasks=[],
+        completed_actions=[],
         conversation_history=[{"user": user or "me", "text": user_input}],
         user_preferences={},
         active_context={},

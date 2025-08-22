@@ -57,6 +57,7 @@ class AIAssistantWorkflow:
         workflow.add_node("email_agent", self._execute_email_agent)
         workflow.add_node("calendar_agent", self._execute_calendar_agent)
         workflow.add_node("search_agent", self._execute_search_agent)
+        workflow.add_node("orchestrator", self._execute_orchestrator)
         workflow.add_node("verify_response", self._verify_response)
         workflow.add_node("fallback_handler", self._handle_fallback)
         
@@ -71,12 +72,13 @@ class AIAssistantWorkflow:
                 "email": "email_agent",
                 "calendar": "calendar_agent",
                 "search": "search_agent",
+                "orchestrator": "orchestrator",
                 "fallback": "fallback_handler"
             }
         )
         
         # Add edges from agents to verification
-        for agent in ["email_agent", "calendar_agent", "search_agent"]: 
+        for agent in ["email_agent", "calendar_agent", "search_agent", "orchestrator"]: 
             workflow.add_edge(agent, "verify_response")
         
         # Add conditional edges from verification
@@ -131,6 +133,38 @@ class AIAssistantWorkflow:
         """Execute the calendar agent."""
         state['current_agent'] = 'calendar'
         return await self.agents['calendar'].execute_with_tracking(state)
+    
+    async def _execute_search_agent(self, state: AssistantState) -> AssistantState:
+        """Execute the search agent."""
+        state['current_agent'] = 'search'
+        return await self.agents['search'].execute_with_tracking(state)
+    
+    async def _execute_orchestrator(self, state: AssistantState) -> AssistantState:
+        """Execute the orchestrator for complex multi-agent tasks."""
+        state['current_agent'] = 'orchestrator'
+        try:
+            # Use orchestrator to handle complex requests that may require multiple agents
+            orchestrator_result = await self.orchestrator.process_complex_request(
+                state['user_input'],
+                state.get('task_type', 'general')
+            )
+            
+            state['final_response'] = orchestrator_result.get('response', '')
+            state['orchestrator_metadata'] = orchestrator_result.get('metadata', {})
+            
+            return state
+            
+        except Exception as e:
+            # Handle orchestrator execution errors
+            error_log = state.get('error_log', [])
+            error_log.append({
+                'stage': 'orchestrator_execution',
+                'error': str(e),
+                'timestamp': self._get_timestamp()
+            })
+            state['error_log'] = error_log
+            state['route'] = 'fallback'
+            return state
     
     async def _verify_response(self, state: AssistantState) -> AssistantState:
         """Verify the quality and completeness of the agent response."""
@@ -206,9 +240,9 @@ class AIAssistantWorkflow:
         route_mapping = {
             'email': 'email',
             'calendar': 'calendar',
-            'task': 'task',
-            'multi_agent': 'coordinator',
-            'complex': 'coordinator'
+            'search': 'search',
+            'multi_agent': 'orchestrator',
+            'complex': 'orchestrator'
         }
         
         return route_mapping.get(route, 'fallback')

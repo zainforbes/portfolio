@@ -47,11 +47,11 @@ class MessageTypes:
     STATUS_REQUEST = "status_request"
     STATUS_RESPONSE = "status_response"
     
-    # Task delegation
-    TASK_REQUEST = "task_request"
-    TASK_RESPONSE = "task_response"
-    TASK_COMPLETE = "task_complete"
-    TASK_FAILED = "task_failed"
+    # Request delegation
+    REQUEST = "request"
+    RESPONSE = "response"
+    COMPLETE = "complete"
+    FAILED = "failed"
     
     # Coordination
     ESCALATION = "escalation"
@@ -75,8 +75,7 @@ class MessageTypes:
     CALENDAR_CANCEL = "calendar_cancel"
     CALENDAR_CHECK_AVAILABILITY = "calendar_check_availability"
     
-    # Task-specific messages
-    TASK_CREATE = "task_create"
-    TASK_UPDATE = "task_update"
-    TASK_PRIORITIZE = "task_prioritize"
-    TASK_COMPLETE = "task_complete"
+    # Search-specific messages
+    SEARCH_QUERY = "search_query"
+    SEARCH_RESULTS = "search_results"
+    SEARCH_REFINE = "search_refine"
