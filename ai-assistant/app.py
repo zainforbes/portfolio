@@ -14,7 +14,7 @@ from src.core.langgraph_workflow import AIAssistantWorkflow
 st.set_page_config(page_title="Personal AI Assistant", page_icon="🤖")
 
 st.title("🤖 Personal AI Assistant")
-st.caption("✨ Powered by Email & Calendar Agents with LangGraph")
+st.caption("✨ Powered by LangGraph, Developed by Zain!")
 
 # Initialize session state
 if "workflow" not in st.session_state:
