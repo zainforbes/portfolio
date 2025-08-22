@@ -53,6 +53,7 @@ credentials.json
 *.pem
 *.key
 *.crt
+*config
 
 # Google API tokens
 config/*.pickle
