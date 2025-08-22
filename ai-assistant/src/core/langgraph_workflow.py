@@ -1,6 +1,6 @@
 # src/langgraph_workflow.py
 from langgraph.graph import StateGraph, END
-from typing import Dict, Any, Optional
+from typing import Dict, List, Any, Optional
 
 from src.core.state_schema import AssistantState, make_initial_state
 from src.core.orchestrator import CoreOrchestrator
@@ -71,7 +71,9 @@ class AIAssistantWorkflow:
 
     async def _route_request(self, state: AssistantState) -> AssistantState:
         try:
-            route_result = await self.orchestrator.route_request(state['user_input'])
+            # Pass conversation history to the orchestrator for context-aware routing
+            conversation_history = state.get('conversation_history', [])
+            route_result = await self.orchestrator.route_request(state['user_input'], conversation_history)
             state.update({
                 'route': route_result['route'],
                 'route_confidence': route_result['confidence'],
@@ -127,7 +129,21 @@ class AIAssistantWorkflow:
     async def _summarize_with_gemini(self, state: AssistantState) -> AssistantState:
         try:
             content = "\n".join([m['content'] for m in state.get('agent_messages', []) if m.get('content')])
-            prompt = f"Summarize the assistant's findings and return a final answer.\n\nContent: {content}"
+            user_input = state.get('user_input', '')
+            
+            # Check if we already have a final response from agents
+            if state.get('final_response') and len(state['final_response'].strip()) > 5:
+                return state  # Keep existing concise response
+            
+            prompt = f"""Provide a direct, concise answer to: "{user_input}"
+            
+Based on: {content}
+
+Requirements:
+- Answer in 1-2 sentences maximum
+- Be direct and factual
+- No explanations or elaborations
+- Just the core answer"""
             final = await self.gemini_mcp_client.chat(prompt)
             state['final_response'] = final
         except Exception as e:
@@ -185,9 +201,14 @@ class AIAssistantWorkflow:
             return 'retry'
         return 'fallback'
 
-    async def process_request(self, user_input: str, user: Optional[str] = None) -> AssistantState:
+    async def process_request(self, user_input: str, user: Optional[str] = None, conversation_history: Optional[List[Dict[str, Any]]] = None) -> AssistantState:
         await self.initialize_servers()
         initial_state = make_initial_state(user_input, user)
+        
+        # Preserve conversation history if provided
+        if conversation_history:
+            initial_state['conversation_history'] = conversation_history + [{"user": user or "me", "text": user_input}]
+        
         return await self.workflow.ainvoke(initial_state, config={"recursion_limit": 10})
 
     async def stream_process(self, user_input: str, user: Optional[str] = None):

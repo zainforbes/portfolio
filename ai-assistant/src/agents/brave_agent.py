@@ -175,14 +175,27 @@ Focus on improving search effectiveness."""
             
             self.logger.info(f"Performing web search for: {query}")
             
-            # Perform search using MCP tool
-            search_results = await self.use_tool('search_web', {
-                'query': query,
-                'count': 10
-            })
+            # Try direct search through Gemini MCP client search tools
+            search_results = None
+            if hasattr(self.gemini_mcp_client, 'search_tools') and self.gemini_mcp_client.search_tools:
+                try:
+                    search_results = await self.gemini_mcp_client.search_tools.web_search(query, 10)
+                    self.logger.info(f"Search tools returned {search_results.get('total_results', 0)} results")
+                except Exception as e:
+                    self.logger.warning(f"Search tools failed: {e}")
             
-            if not search_results or 'results' not in search_results:
-                # Fallback: try direct search through Gemini MCP client
+            # Fallback: try MCP tool interface
+            if not search_results or not search_results.get('results'):
+                try:
+                    search_results = await self.use_tool('search_web', {
+                        'query': query,
+                        'count': 10
+                    })
+                except Exception as e:
+                    self.logger.warning(f"MCP tool search failed: {e}")
+            
+            # Final fallback: Gemini MCP client _search_web method
+            if not search_results or not search_results.get('results'):
                 search_results = await self.gemini_mcp_client._search_web(query, 10)
             
             # Check if we got a fallback response instead of search results

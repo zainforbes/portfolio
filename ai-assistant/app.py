@@ -64,8 +64,16 @@ if prompt := st.chat_input("Ask me about your calendar or emails..."):
     with st.chat_message("assistant"):
         with st.spinner("Processing your request..."):
             try:
-                # Run the workflow
-                result_state = asyncio.run(workflow.process_request(prompt))
+                # Extract conversation history from session state
+                conversation_history = []
+                for msg in st.session_state.messages:
+                    if msg["role"] == "user":
+                        conversation_history.append({"user": "me", "text": msg["content"]})
+                    elif msg["role"] == "assistant":
+                        conversation_history.append({"assistant": "ai", "text": msg["content"]})
+                
+                # Run the workflow with conversation history
+                result_state = asyncio.run(workflow.process_request(prompt, conversation_history=conversation_history))
                 print("DEBUG: result_state =", result_state)
                 
                 # Extract response

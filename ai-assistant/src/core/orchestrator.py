@@ -27,14 +27,15 @@ class CoreOrchestrator:
             'calendar': [
                 'schedule', 'meeting', 'appointment', 'calendar', 'event',
                 'book', 'reschedule', 'cancel', 'availability', 'time',
-                'date', 'tomorrow', 'today', 'next week'
+                'date', 'tomorrow', 'today', 'next week', 'free', 'busy'
             ],
             'search': [
                 'search', 'find', 'look up', 'research', 'investigate',
                 'what is', 'who is', 'how to', 'when did', 'where is',
+                'what are', 'what was', 'capital of', 'capital city',
                 'google', 'browse', 'web', 'internet', 'online',
                 'information about', 'details on', 'facts about',
-                'brave search', 'web search'
+                'brave search', 'web search', 'define', 'explain'
             ]
         }
 
@@ -45,13 +46,13 @@ class CoreOrchestrator:
             'average_confidence': 0.0
         }
 
-    async def route_request(self, user_input: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def route_request(self, user_input: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         self.routing_stats['total_requests'] += 1
 
         keyword_analysis = await self._analyze_keywords(user_input)
-        ai_analysis = await self._analyze_with_gemini(user_input)
+        ai_analysis = await self._analyze_with_gemini(user_input, conversation_history)
 
-        route_decision = await self._make_routing_decision(user_input, keyword_analysis, ai_analysis)
+        route_decision = await self._make_routing_decision(user_input, keyword_analysis, ai_analysis, conversation_history)
 
         if route_decision['route'] != 'fallback':
             self.routing_stats['successful_routes'] += 1
@@ -110,17 +111,32 @@ class CoreOrchestrator:
             'method': 'keyword_analysis'
         }
 
-    async def _analyze_with_gemini(self, user_input: str) -> Dict[str, Any]:
+    async def _analyze_with_gemini(self, user_input: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        # Build context from conversation history
+        context = ""
+        if conversation_history and len(conversation_history) > 1:
+            recent_history = conversation_history[-3:]  # Last 3 exchanges
+            context = "\nConversation context:\n"
+            for msg in recent_history[:-1]:  # Exclude current message
+                if 'user' in msg:
+                    context += f"User: {msg['text']}\n"
+                elif 'assistant' in msg:
+                    context += f"Assistant: {msg['text']}\n"
+            context += "\nCurrent request: " + user_input
+        
         prompt = (
             """Classify the following user request into one of the following categories:
             - email
             - calendar
             - search
             - multi_agent
+            
+            Consider the conversation context to understand if this is a follow-up request.
+            For example, if the user previously asked about emails and now says "summarize", 
+            this should be classified as "email" not "search".
+            
             Respond with only the category name.
-
-            Request: """ + user_input + """
-            """
+            """ + (context if context else f"\nRequest: {user_input}")
         )
         try:
             response = await self.gemini_mcp_client.chat(prompt)
@@ -143,11 +159,39 @@ class CoreOrchestrator:
                 'task_type': 'general'
             }
 
-    async def _make_routing_decision(self, user_input: str, keyword_analysis: Dict[str, Any], ai_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    async def _make_routing_decision(self, user_input: str, keyword_analysis: Dict[str, Any], ai_analysis: Dict[str, Any], conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         keyword_route = keyword_analysis['best_route']
         keyword_confidence = keyword_analysis['confidence']
         ai_route = ai_analysis['best_route']
         ai_confidence = ai_analysis['confidence']
+        
+        # Check for follow-up commands that should inherit context from previous requests
+        if conversation_history and len(conversation_history) > 1:
+            previous_user_msg = None
+            for msg in reversed(conversation_history[:-1]):  # Exclude current message
+                if 'user' in msg:
+                    previous_user_msg = msg['text']
+                    break
+            
+            if previous_user_msg and user_input.lower().strip() in ['summarize', 'summary', 'tell me more', 'details', 'more info']:
+                # Determine the context from the previous request
+                prev_keyword_analysis = await self._analyze_keywords(previous_user_msg)
+                if prev_keyword_analysis['best_route'] != 'fallback':
+                    final_route = prev_keyword_analysis['best_route']
+                    final_confidence = 0.8  # High confidence for contextual follow-up
+                    reasoning = f"Follow-up request continuing from previous {final_route} context"
+                    
+                    # Add email_intent_clarification task type for email summarization
+                    task_type = 'email_intent_clarification' if final_route == 'email' else ai_analysis.get('task_type', 'general')
+                    
+                    return {
+                        'route': final_route,
+                        'confidence': final_confidence,
+                        'reason': reasoning,
+                        'task_type': task_type,
+                        'keyword_analysis': keyword_analysis,
+                        'ai_analysis': ai_analysis
+                    }
 
         if keyword_route == ai_route and keyword_route != 'fallback':
             final_confidence = min((keyword_confidence + ai_confidence) / 2 * 1.5, 1.0)
@@ -204,6 +248,38 @@ class CoreOrchestrator:
         )
 
     async def process_complex_request(self, user_input: str, task_type: str = 'general') -> Dict[str, Any]:
+        # For search queries, directly execute search and return concise results
+        if task_type == 'web_search' or any(word in user_input.lower() for word in ['what is', 'who is', 'capital of', 'search']):
+            try:
+                # Try direct search through search tools first
+                search_results = None
+                if hasattr(self.gemini_mcp_client, 'search_tools') and self.gemini_mcp_client.search_tools:
+                    try:
+                        search_results = await self.gemini_mcp_client.search_tools.web_search(user_input, 5)
+                    except Exception as e:
+                        self.logger.warning(f"Search tools failed in orchestrator: {e}")
+                
+                # Fallback to MCP client method
+                if not search_results or not search_results.get('results'):
+                    search_results = await self.gemini_mcp_client._search_web(user_input, 5)
+                
+                if search_results and 'results' in search_results and search_results['results']:
+                    # Extract direct answer from top result
+                    top_result = search_results['results'][0]
+                    answer_prompt = f"""Based on this search result, provide a direct, concise answer (1-2 sentences max) to: {user_input}
+                    
+Result: {top_result.get('title', '')} - {top_result.get('description', '')}
+                    
+Provide only the factual answer, no explanations."""
+                    
+                    concise_answer = await self.gemini_mcp_client.chat(answer_prompt)
+                    return {
+                        'response': concise_answer,
+                        'metadata': {'task_type': task_type, 'source': 'search_direct'}
+                    }
+            except Exception as e:
+                self.logger.warning(f"Direct search failed: {e}")
+        
         return {
             'response': f"I'll coordinate actions across multiple agents for: {user_input}",
             'metadata': {'task_type': task_type}
@@ -230,40 +306,42 @@ class CoreOrchestrator:
             return {'quality': 0.0, 'completeness': 0.0}
 
     async def handle_fallback(self, user_input: str, error_log: List[Dict[str, Any]]) -> str:
-        """Enhanced fallback handler that provides helpful responses based on input."""
+        """Concise fallback handler for unroutable requests."""
         try:
-            # Analyze the user input to provide contextual help
-            fallback_prompt = f"""
-            The user asked: "{user_input}"
+            # First try direct search for informational queries
+            if any(word in user_input.lower() for word in ['what', 'who', 'when', 'where', 'how', 'capital']):
+                try:
+                    # Try search tools first
+                    search_results = None
+                    if hasattr(self.gemini_mcp_client, 'search_tools') and self.gemini_mcp_client.search_tools:
+                        try:
+                            search_results = await self.gemini_mcp_client.search_tools.web_search(user_input, 3)
+                        except Exception as e:
+                            self.logger.warning(f"Search tools failed in fallback: {e}")
+                    
+                    # Fallback to MCP client method
+                    if not search_results or not search_results.get('results'):
+                        search_results = await self.gemini_mcp_client._search_web(user_input, 3)
+                    
+                    if search_results and 'results' in search_results and search_results['results']:
+                        top_result = search_results['results'][0]
+                        answer_prompt = f"""Provide a direct, concise answer (1-2 sentences max) to: {user_input}
+                        
+Based on: {top_result.get('description', '')}
+                        
+Answer only the question asked."""
+                        
+                        answer = await self.gemini_mcp_client.chat(answer_prompt)
+                        return answer
+                except Exception:
+                    pass
             
-            I couldn't route this to a specific agent, but I should still be helpful.
-            Please provide a useful response that:
-            1. Acknowledges what they're trying to do
-            2. Explains what I can help with instead
-            3. Suggests how they could rephrase their request
-            4. Offers specific examples of what I can do
-            
-            My capabilities include:
-            - Email management (reading, organizing, composing emails)
-            - Calendar management (scheduling, viewing events, finding availability)
-            - Web search and research (finding information online)
-            
-            Be friendly and helpful while guiding them toward a request I can handle.
-            """
-            
-            helpful_response = await self.gemini_mcp_client.chat(fallback_prompt)
-            return helpful_response
+            # For other requests, provide brief guidance
+            return f"I can't handle '{user_input}' directly. Try: 'search for [topic]', 'check emails', or 'show calendar'."
             
         except Exception as e:
             self.logger.error(f"Fallback handler error: {e}")
-            return f"""I'm sorry, I couldn't process your request: "{user_input}"
-
-However, I can help you with:
-• 📧 **Email tasks**: "show my unread emails" or "classify my emails by priority"  
-• 📅 **Calendar tasks**: "show my upcoming events" or "when am I free tomorrow?"
-• 🔍 **Search tasks**: "search for information about [topic]"
-
-Could you try rephrasing your request using one of these examples?"""
+            return "Request not understood. Try 'search for [topic]', 'check emails', or 'show calendar'."
 
     async def health_check(self) -> bool:
         try:
