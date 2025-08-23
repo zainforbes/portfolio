@@ -2,11 +2,18 @@ from langgraph.graph import StateGraph
 from .state_schema import AssistantState
 
 def classify_request_node(state: AssistantState) -> AssistantState:
-    # TODO: Replace with Gemini classification
-    state["current_agent"] = "email" if "email" in state["user_input"].lower() else "default"
+    text = (state.get("user_input") or "").lower()
+    state["current_agent"] = "email" if "email" in text else "default"
     return state
 
-graph = StateGraph(AssistantState)
-graph.add_node("classifier", classify_request_node)
-graph.set_entry_point("classifier")
-workflow = graph.compile()
+def build_workflow():
+    graph = StateGraph(AssistantState)
+    graph.add_node("classifier", classify_request_node)
+    graph.set_entry_point("classifier")
+    return graph.compile()
+
+# smoke test if you run this file directly
+if __name__ == "__main__":
+    wf = build_workflow()
+    state = {"user_input": "check my emails", "current_agent": "", "agent_messages": []}
+    print(wf.invoke(state))
