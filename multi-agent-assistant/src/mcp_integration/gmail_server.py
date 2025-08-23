@@ -1,99 +1,65 @@
+from __future__ import annotations
+import base64, asyncio
 from typing import List, Dict, Optional
-import asyncio
-from base64 import urlsafe_b64decode
+from email.mime.text import MIMEText
+from email.utils import formataddr
 from googleapiclient.discovery import build
-from src.utils.google_auth import get_credentials, GMAIL_SCOPES
+from googleapiclient.errors import HttpError
+from src.utils.google_auth import get_credentials, GMAIL_SCOPES_RO, GMAIL_SCOPES_RW
 
-# --- helpers -------------------------------------------------
-
-def _headers_to_dict(payload_headers: List[Dict]) -> Dict[str, str]:
-    return {h.get("name", ""): h.get("value", "") for h in (payload_headers or [])}
-
-def _extract_plain_text(payload: Dict) -> str:
-    """
-    Recursively walk the payload to find text/plain; fallback to first text/* part.
-    """
-    if not payload:
-        return ""
-    mime = payload.get("mimeType", "")
-    body = payload.get("body", {}) or {}
-    data = body.get("data")
-
-    # leaf node
-    if data:
-        try:
-            decoded = urlsafe_b64decode(data.encode("utf-8")).decode("utf-8", errors="ignore")
-        except Exception:
-            decoded = ""
-        return decoded
-
-    # multipart
-    parts = payload.get("parts") or []
-    # prefer text/plain
-    for p in parts:
-        if p.get("mimeType", "").startswith("text/plain"):
-            txt = _extract_plain_text(p)
-            if txt:
-                return txt
-    # fallback: any text/*
-    for p in parts:
-        if p.get("mimeType", "").startswith("text/"):
-            txt = _extract_plain_text(p)
-            if txt:
-                return txt
-    return ""
-
-# --- API functions ------------------------------------------
-
-async def list_recent_emails(query: Optional[str] = None, max_results: int = 5) -> List[Dict]:
-    """
-    Returns: [{id, from, subject, snippet, date}]
-    """
-    creds = get_credentials(GMAIL_SCOPES)
+# ---- READ ----
+async def list_recent_emails(query: Optional[str] = None, max_results: int = 10) -> List[Dict]:
+    creds = get_credentials(GMAIL_SCOPES_RO)
     service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
-
-    results = await asyncio.to_thread(
-        service.users().messages().list,
-        userId="me", q=query or "", maxResults=max_results
-    )
-    results = await asyncio.to_thread(results.execute)
-    messages = results.get("messages", [])
-
-    out: List[Dict] = []
-    for m in messages:
-        msg_req = service.users().messages().get(userId="me", id=m["id"], format="metadata", metadataHeaders=["From","Subject","Date"])
-        msg = await asyncio.to_thread(msg_req.execute)
-        headers = _headers_to_dict(msg.get("payload", {}).get("headers", []))
-        out.append({
-            "id": m["id"],
-            "from": headers.get("From", ""),
-            "subject": headers.get("Subject", ""),
-            "snippet": msg.get("snippet", ""),
-            "date": headers.get("Date", ""),
-        })
-    return out
+    try:
+        mlist = await asyncio.to_thread(service.users().messages().list,
+                                        userId="me", maxResults=max_results, q=query or "")
+        res = await asyncio.to_thread(mlist.execute)
+        ids = [m["id"] for m in res.get("messages", [])]
+        out: List[Dict] = []
+        for mid in ids:
+            req = service.users().messages().get(userId="me", id=mid, format="metadata", metadataHeaders=["From","Subject","Date"])
+            m = await asyncio.to_thread(req.execute)
+            headers = {h["name"]: h["value"] for h in m.get("payload", {}).get("headers", [])}
+            out.append({
+                "id": m.get("id",""),
+                "from": headers.get("From",""),
+                "subject": headers.get("Subject",""),
+                "date": headers.get("Date",""),
+                "snippet": m.get("snippet",""),
+            })
+        return out
+    except HttpError as e:
+        raise RuntimeError(str(e)) from e
 
 async def read_email(message_id: str) -> Dict:
-    """
-    Returns a single email with decoded plain-text body (best effort).
-    {id, threadId, subject, from, to, date, body, snippet}
-    """
-    creds = get_credentials(GMAIL_SCOPES)
+    creds = get_credentials(GMAIL_SCOPES_RO)
     service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
-
     req = service.users().messages().get(userId="me", id=message_id, format="full")
-    msg = await asyncio.to_thread(req.execute)
+    m = await asyncio.to_thread(req.execute)
+    return m
 
-    headers = _headers_to_dict(msg.get("payload", {}).get("headers", []))
-    body_text = _extract_plain_text(msg.get("payload", {})) or msg.get("snippet", "")
+# ---- WRITE ----
+def _build_raw(from_name: Optional[str], to: List[str], subject: str, body: str, cc: List[str] | None = None, bcc: List[str] | None = None) -> str:
+    msg = MIMEText(body, _subtype="plain", _charset="utf-8")
+    msg["To"] = ", ".join(to)
+    if cc:  msg["Cc"]  = ", ".join(cc)
+    if bcc: msg["Bcc"] = ", ".join(bcc)
+    msg["From"] = formataddr((from_name or "", "me"))  # "me" is fine; Gmail replaces with your account
+    msg["Subject"] = subject
+    return base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
-    return {
-        "id": msg.get("id"),
-        "threadId": msg.get("threadId"),
-        "subject": headers.get("Subject", ""),
-        "from": headers.get("From", ""),
-        "to": headers.get("To", ""),
-        "date": headers.get("Date", ""),
-        "body": body_text,
-        "snippet": msg.get("snippet", ""),
-    }
+async def create_draft(to: List[str], subject: str, body: str, cc: List[str] | None = None, bcc: List[str] | None = None) -> Dict:
+    creds = get_credentials(GMAIL_SCOPES_RW)
+    service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
+    raw = _build_raw(None, to, subject, body, cc, bcc)
+    draft = {"message": {"raw": raw}}
+    req = service.users().drafts().create(userId="me", body=draft)
+    return await asyncio.to_thread(req.execute)
+
+async def send_email(to: List[str], subject: str, body: str, cc: List[str] | None = None, bcc: List[str] | None = None) -> Dict:
+    creds = get_credentials(GMAIL_SCOPES_RW)
+    service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
+    raw = _build_raw(None, to, subject, body, cc, bcc)
+    req = service.users().messages().send(userId="me", body={"raw": raw})
+    return await asyncio.to_thread(req.execute)

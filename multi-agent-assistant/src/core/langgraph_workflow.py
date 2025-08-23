@@ -6,8 +6,8 @@ from .state_schema import AssistantState
 # Tool registry (already implemented in your project)
 from src.mcp_integration.mcp_client import MCPClient
 from src.mcp_integration.search_server import web_search
-from src.mcp_integration.gmail_server import list_recent_emails, read_email
-from src.mcp_integration.calendar_server import list_events
+from src.mcp_integration.gmail_server import list_recent_emails, read_email, create_draft, send_email
+from src.mcp_integration.calendar_server import list_events, create_event, update_event, delete_event
 from src.utils.gemini_client import GeminiClient
 from src.intelligence.router import classify_request
 
@@ -15,7 +15,12 @@ MCP = MCPClient()
 MCP.register_tool("web_search", web_search)
 MCP.register_tool("gmail_list_recent", list_recent_emails)
 MCP.register_tool("gmail_read", read_email)
+MCP.register_tool("gmail_draft", create_draft)
+MCP.register_tool("gmail_send", send_email)
 MCP.register_tool("gcal_list_events", list_events)
+MCP.register_tool("gcal_create_event", create_event)
+MCP.register_tool("gcal_update_event", update_event)
+MCP.register_tool("gcal_delete_event", delete_event)
 GEM = GeminiClient()
 
 # Agents
@@ -27,7 +32,7 @@ from src.agents.search_agent import SearchAgent
 from src.intelligence.communication import AgentCommunicationHub
 
 AGENTS: Dict[str, object] = {
-    "default": DefaultAgent(),
+    "default": DefaultAgent(gemini=GEM),
     "email":   EmailAgent(MCP, gemini=GEM),
     "calendar":CalendarAgent(MCP, gemini=GEM),
     "search":  SearchAgent(MCP, gemini=GEM),
