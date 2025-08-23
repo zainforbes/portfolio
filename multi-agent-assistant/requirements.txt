@@ -1,0 +1,20 @@
+#original reqs
+streamlit
+langgraph
+langchain
+google-generativeai
+google-auth
+google-auth-oauthlib
+google-api-python-client
+aiohttp
+asyncio
+httpx
+pydantic
+python-dotenv
+mcp
+streamlit-chat
+plotly
+pandas
+numpy
+pytest
+pytest-asyncio
