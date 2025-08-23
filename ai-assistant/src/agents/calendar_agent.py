@@ -110,9 +110,22 @@ Focus on actionable insights that help improve productivity and work-life balanc
         """Execute calendar agent operations based on current state and context."""
         try:
             user_request = state.get('user_input', '')
+            task_type = state.get('task_type', '')
             
-            # Determine what calendar operation to perform
-            operation = await self._determine_operation(user_request, state.get('active_context', {}))
+            # Handle follow-up response for calendar action selection
+            if task_type == "calendar_action_request":
+                return await self._handle_calendar_action_response(state)
+            
+            # Check if we need to clarify the user's intent first
+            active_context = state.get('active_context', {})
+            requested_action = active_context.get('requested_calendar_action')
+            
+            if requested_action is None:
+                # Ask user what they want to do with their calendar
+                return await self._clarify_calendar_intent(state)
+            
+            # Determine what calendar operation to perform based on stored action
+            operation = requested_action
             
             if operation == "create_event":
                 return await self._create_calendar_event(state)
@@ -174,6 +187,11 @@ Focus on actionable insights that help improve productivity and work-life balanc
 
     def _add_agent_message(self, state: AssistantState, content: str, message_type: str = "info") -> AssistantState:
         """Helper to add agent messages to state using state schema."""
+        # Add follow-up prompt for completed tasks (not for clarifications or input requests)
+        if message_type in ["events_listed", "event_created", "schedule_analyzed", "availability_checked", "conflicts_analyzed", "schedule_optimized"] and not content.endswith("anything else"):
+            follow_up = "\n\n📅 **Is there anything else I can help you with regarding your calendar?**\n• List different events\n• Create new events\n• Analyze your schedule\n• Check availability\n• Resolve conflicts\n• Optimize your schedule"
+            content += follow_up
+            
         agent_messages = state.get('agent_messages', [])
         agent_messages.append({
             'agent': self.agent_name,
@@ -474,6 +492,108 @@ Event ID: {event_result.get('event_id', 'N/A')}
             context="You are a helpful calendar assistant. Provide guidance on calendar management, scheduling, and time organization best practices."
         )
         return self._add_agent_message(state, response, "assistance")
+
+    async def _clarify_calendar_intent(self, state: AssistantState) -> AssistantState:
+        """Ask user what they want to do with their calendar."""
+        clarification_prompt = (
+            "What would you like me to do with your calendar?\n\n"
+            "📅 **Available Options:**\n"
+            "• 📋 **List Events** - View your upcoming events\n"
+            "• ➕ **Create Event** - Schedule a new event\n"
+            "• 📊 **Analyze Schedule** - Get insights on your schedule\n"
+            "• 🔍 **Check Availability** - Find free time slots\n"
+            "• ⚠️ **Resolve Conflicts** - Fix scheduling conflicts\n"
+            "• 🎯 **Optimize Schedule** - Get optimization suggestions\n\n"
+            "Please tell me which option you'd like, or describe what you need help with:"
+        )
+        
+        state["task_type"] = "calendar_action_request"
+        state["pending_requests"] = ["calendar_action"]
+        state["current_agent"] = self.agent_name
+        return self._add_agent_message(state, clarification_prompt, "clarification")
+
+    async def _handle_calendar_action_response(self, state: AssistantState) -> AssistantState:
+        """Handle user's response with their chosen calendar action."""
+        user_input = state.get('user_input', '').strip().lower()
+        
+        # Map user responses to calendar operations
+        action_mapping = {
+            'list': 'list_events',
+            'events': 'list_events', 
+            'show': 'list_events',
+            'view': 'list_events',
+            'upcoming': 'list_events',
+            '1': 'list_events',
+            
+            'create': 'create_event',
+            'schedule': 'create_event',
+            'add': 'create_event',
+            'new': 'create_event',
+            '2': 'create_event',
+            
+            'analyze': 'analyze_schedule',
+            'analysis': 'analyze_schedule',
+            'insights': 'analyze_schedule',
+            'overview': 'analyze_schedule',
+            '3': 'analyze_schedule',
+            
+            'availability': 'check_availability',
+            'available': 'check_availability',
+            'free': 'check_availability',
+            'slots': 'check_availability',
+            '4': 'check_availability',
+            
+            'conflicts': 'resolve_conflicts',
+            'conflict': 'resolve_conflicts',
+            'resolve': 'resolve_conflicts',
+            'overlapping': 'resolve_conflicts',
+            '5': 'resolve_conflicts',
+            
+            'optimize': 'optimize_schedule',
+            'optimization': 'optimize_schedule',
+            'improve': 'optimize_schedule',
+            'suggestions': 'optimize_schedule',
+            '6': 'optimize_schedule'
+        }
+        
+        # Find matching action
+        chosen_action = None
+        for keyword, action in action_mapping.items():
+            if keyword in user_input:
+                chosen_action = action
+                break
+        
+        if chosen_action:
+            # Store the chosen action and proceed
+            active_context = state.get('active_context', {})
+            active_context['requested_calendar_action'] = chosen_action
+            state['active_context'] = active_context
+            
+            # Clear the task type to proceed with normal execution
+            state['task_type'] = 'calendar_execution'
+            
+            # Execute the chosen action
+            if chosen_action == "create_event":
+                return await self._create_calendar_event(state)
+            elif chosen_action == "list_events":
+                return await self._list_calendar_events(state)
+            elif chosen_action == "analyze_schedule":
+                return await self._analyze_schedule(state)
+            elif chosen_action == "check_availability":
+                return await self._check_availability(state)
+            elif chosen_action == "resolve_conflicts":
+                return await self._resolve_scheduling_conflicts(state)
+            elif chosen_action == "optimize_schedule":
+                return await self._optimize_schedule(state)
+        else:
+            # No valid action found, ask again
+            prompt = (
+                "I didn't understand your choice. Please select one of the options:\n\n"
+                "1️⃣ List Events\n2️⃣ Create Event\n3️⃣ Analyze Schedule\n"
+                "4️⃣ Check Availability\n5️⃣ Resolve Conflicts\n6️⃣ Optimize Schedule\n\n"
+                "You can type the number or the option name:"
+            )
+            return self._add_agent_message(state, prompt, "input_request")
 
     # Utility Methods
     

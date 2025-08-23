@@ -307,7 +307,11 @@ Requirements:
         
         response = await self.generate_response(prompt)
         
-        # Return just the concise answer without metadata
+        # Add follow-up prompt for search results
+        follow_up = "\n\n🔍 **Is there anything else I can help you search for?**\n• Search different topics\n• Analyze search patterns\n• Optimize search queries\n• Research specific information"
+        response += follow_up
+        
+        # Return the answer with follow-up prompt
         return response
 
     async def _handle_result_analysis(self, state: AssistantState, search_action: Dict[str, Any]) -> AssistantState:
@@ -326,6 +330,10 @@ Requirements:
             f"Analyze these search result patterns: {analysis}",
             context=self.system_prompts['search_analysis']
         )
+        
+        # Add follow-up prompt
+        follow_up = "\n\n🔍 **Is there anything else I can help you search for?**\n• Search different topics\n• Analyze search patterns\n• Optimize search queries\n• Research specific information"
+        response += follow_up
         
         state['final_response'] = response
         state['search_analysis'] = analysis
@@ -391,6 +399,10 @@ Focus on improving search effectiveness and finding authoritative sources."""
             prompt,
             context=self.system_prompts['query_optimization']
         )
+        
+        # Add follow-up prompt
+        follow_up = "\n\n🔍 **Is there anything else I can help you search for?**\n• Search different topics\n• Analyze search patterns\n• Optimize search queries\n• Research specific information"
+        response += follow_up
         
         state['final_response'] = response
         state['task_type'] = 'query_optimization'

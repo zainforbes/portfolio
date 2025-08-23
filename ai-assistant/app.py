@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import the AI Assistant workflow
-from src.core.langgraph_workflow import AIAssistantWorkflow
+from src.core.enhanced_langgraph_workflow import AIAssistantWorkflow
 
 st.set_page_config(page_title="Personal AI Assistant", page_icon="🤖")
 

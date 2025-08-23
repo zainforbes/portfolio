@@ -4,7 +4,7 @@ from typing import Dict, List, Any, Optional
 
 from src.core.state_schema import AssistantState, make_initial_state
 from src.core.orchestrator import CoreOrchestrator
-from src.agents.email_agent import EmailAgent
+from src.agents.enhanced_email_agent import EnhancedEmailAgent
 from src.agents.calendar_agent import CalendarAgent
 from src.agents.brave_agent import BraveAgent
 from src.mcp_integration.gemini_mcp_client import GeminiMCPClient
@@ -16,7 +16,7 @@ class AIAssistantWorkflow:
         self.initialized = False
 
         self.agents = {
-            'email': EmailAgent(self.gemini_mcp_client),
+            'email': EnhancedEmailAgent(self.gemini_mcp_client),
             'calendar': CalendarAgent(self.gemini_mcp_client),
             'search': BraveAgent(self.gemini_mcp_client),
             }
@@ -78,7 +78,10 @@ class AIAssistantWorkflow:
                 'route': route_result['route'],
                 'route_confidence': route_result['confidence'],
                 'route_reason': route_result['reason'],
-                'task_type': route_result.get('task_type', 'general')
+                'task_type': route_result.get('task_type', 'general'),
+                'user_intent': route_result.get('user_intent', ''),
+                'next_action': route_result.get('next_action', ''),
+                'parameters': route_result.get('parameters', {})
             })
             return state
         except Exception as e:
@@ -90,6 +93,13 @@ class AIAssistantWorkflow:
 
     async def _execute_email_agent(self, state: AssistantState) -> AssistantState:
         state['current_agent'] = 'email'
+        # Pass LLM analysis parameters to the email agent
+        if 'parameters' not in state:
+            state['parameters'] = {}
+        if 'user_intent' not in state:
+            state['user_intent'] = ''
+        if 'next_action' not in state:
+            state['next_action'] = ''
         return await self.agents['email'].execute_with_tracking(state)
 
     async def _execute_calendar_agent(self, state: AssistantState) -> AssistantState:
@@ -103,10 +113,32 @@ class AIAssistantWorkflow:
     async def _execute_orchestrator(self, state: AssistantState) -> AssistantState:
         state['current_agent'] = 'orchestrator'
         try:
-            result = await self.orchestrator.process_complex_request(state['user_input'], state.get('task_type', 'general'))
-            state['orchestrator_metadata'] = result.get('metadata', {})
-            state['agent_messages'] = [{'role': 'system', 'content': result.get('response', '')}]
-            return state
+            # Check if this is an escalation or collaboration request from an agent
+            if state.get('escalation_request') or state.get('agent_help_request'):
+                result = await self.orchestrator.handle_agent_escalation(state)
+                state['orchestrator_metadata'] = result.get('metadata', {})
+                state['agent_messages'] = state.get('agent_messages', []) + [{'role': 'system', 'content': result.get('response', '')}]
+                state['final_response'] = result.get('response', '')
+                return state
+            
+            # Check if this request should be handled by a specific agent
+            route = state.get('route', '')
+            if route in ['email', 'calendar', 'search']:
+                # This request came FROM an agent, just coordinate the response
+                agent_messages = state.get('agent_messages', [])
+                final_response = state.get('final_response', '')
+                
+                if final_response:
+                    state['agent_messages'] = agent_messages + [{'role': 'system', 'content': final_response}]
+                else:
+                    state['agent_messages'] = agent_messages + [{'role': 'system', 'content': 'Agent completed task'}]
+                return state
+            else:
+                # Handle complex orchestrator requests
+                result = await self.orchestrator.process_complex_request(state['user_input'], state.get('task_type', 'general'))
+                state['orchestrator_metadata'] = result.get('metadata', {})
+                state['agent_messages'] = [{'role': 'system', 'content': result.get('response', '')}]
+                return state
         except Exception as e:
             state.update({
                 'route': 'fallback',
@@ -131,12 +163,30 @@ class AIAssistantWorkflow:
             content = "\n".join([m['content'] for m in state.get('agent_messages', []) if m.get('content')])
             user_input = state.get('user_input', '')
             
-            # Check if we already have a final response from agents
-            if state.get('final_response') and len(state['final_response'].strip()) > 5:
+            # For calendar requests, always format through Gemini
+            if state.get('current_agent') == 'calendar':
+                # Let Gemini format the calendar data properly
+                pass
+            # Check if we already have a final response from other agents
+            elif state.get('final_response') and len(state['final_response'].strip()) > 5:
                 return state  # Keep existing concise response
             
-            prompt = f"""Provide a direct, concise answer to: "{user_input}"
-            
+            # Different prompts for different agent types
+            if state.get('current_agent') == 'calendar':
+                prompt = f"""Format the calendar information to answer: "{user_input}"
+
+Calendar data: {content}
+
+Format each event as:
+Event Name: [event title]
+Date: [day, month date]
+Time: [start time] - [end time]
+Attendees: [attendee list or "None"]
+
+Show all events in this format."""
+            else:
+                prompt = f"""Provide a direct, concise answer to: "{user_input}"
+                
 Based on: {content}
 
 Requirements:

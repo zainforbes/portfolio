@@ -46,6 +46,138 @@ class CoreOrchestrator:
             'average_confidence': 0.0
         }
 
+    async def _analyze_conversation_context(self, user_input: str, conversation_history: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Use LLM to intelligently analyze conversation context and determine next action."""
+        try:
+            # Format conversation history for LLM analysis
+            conversation_text = []
+            for msg in conversation_history[-10:]:  # Last 10 messages for context
+                if 'user' in msg:
+                    conversation_text.append(f"User: {msg['text']}")
+                elif 'assistant' in msg:
+                    conversation_text.append(f"Assistant: {msg['text']}")
+            
+            conversation_str = "\n".join(conversation_text)
+            
+            prompt = f"""Analyze this conversation to understand what the user wants to do next:
+
+CONVERSATION HISTORY:
+{conversation_str}
+
+CURRENT USER INPUT: "{user_input}"
+
+Based on the conversation context, determine:
+1. What is the user trying to accomplish? 
+2. What should happen next?
+3. Which agent/capability should handle this: email, calendar, search, or orchestrator?
+4. What specific action should be taken?
+
+Respond in this exact JSON format:
+{{
+    "analysis": "Brief explanation of what's happening in the conversation",
+    "user_intent": "What the user wants to accomplish", 
+    "next_action": "Specific action to take",
+    "route": "email|calendar|search|orchestrator",
+    "task_type": "specific task identifier",
+    "confidence": 0.0-1.0,
+    "parameters": {{}}
+}}
+
+INTELLIGENT ROUTING: Make autonomous decisions about:
+1. Which agent should handle this request
+2. What specific task needs to be done
+3. What parameters are needed
+4. Whether agents need to collaborate
+5. If escalation to orchestrator is needed
+
+TASK TYPES AND PARAMETERS:
+EMAIL TASKS:
+- "email_summarization" - summarize emails
+  Parameters: {{"count": number, "timeframe": "recent|today|week", "priority": "high|all"}}
+- "email_classification" - classify emails by priority/category
+  Parameters: {{"criteria": "priority|sender|category", "count": number}}
+- "email_search" - search emails with query
+  Parameters: {{"query": "search terms", "sender": "email", "timeframe": "days"}}
+- "email_composition" - compose or reply to emails
+  Parameters: {{"type": "reply|compose|forward", "recipient": "email", "subject": "text"}}
+- "inbox_management" - organize and manage inbox
+  Parameters: {{"action": "organize|clean|archive", "criteria": "age|importance"}}
+- "list_emails" - show email options when user is unclear
+
+CALENDAR TASKS:
+- "list_events" - show upcoming events
+  Parameters: {{"timeframe": "today|tomorrow|week|month", "count": number}}
+- "create_event" - create calendar event
+  Parameters: {{"title": "text", "time": "datetime", "duration": "minutes"}}
+- "analyze_schedule" - analyze schedule patterns
+  Parameters: {{"period": "week|month", "focus": "conflicts|productivity|balance"}}
+- "check_availability" - find free time
+  Parameters: {{"duration": "minutes", "timeframe": "today|week", "preferences": "morning|afternoon"}}
+- "resolve_conflicts" - fix scheduling conflicts
+  Parameters: {{"period": "week|month", "priority": "work|personal"}}
+- "optimize_schedule" - suggest improvements
+  Parameters: {{"focus": "efficiency|balance|meetings", "period": "week"}}
+
+SEARCH TASKS:
+- "web_search" - search for information
+  Parameters: {{"query": "search terms", "type": "factual|research|recent"}}
+- "analyze_results" - analyze search patterns
+- "optimize_query" - improve search terms
+
+AUTONOMOUS DECISION EXAMPLES:
+- "How many emails should I summarize?" → Intelligently ask for count, default to 5-10 if user is vague
+- "Search for important emails" → Use parameters={{"query": "important OR urgent", "priority": "high"}}
+- "Check my schedule for conflicts" → Use task_type="resolve_conflicts", parameters={{"period": "week"}}
+- "Find time for a 30-minute meeting tomorrow" → Use task_type="check_availability", parameters={{"duration": 30, "timeframe": "tomorrow"}}
+
+CONVERSATION CONTEXT HANDLING:
+- If assistant just drafted an email and user says "send that/it/this" → route="email", task_type="email_composition" 
+- If assistant showed calendar events and user asks "schedule meeting" → route="calendar", task_type="create_event"
+- If assistant provided search results and user asks "search more" → route="search", task_type="web_search"
+- Look for follow-up actions that build on previous assistant responses
+
+AGENT COLLABORATION:
+- If task requires multiple agents, set route="orchestrator" with collaboration plan
+- Agents can request help: parameters={{"needs_help_from": "calendar|email|search", "reason": "explanation"}}
+- Escalation triggers: complex multi-step tasks, cross-domain requests, user ambiguity
+"""
+
+            response = await self.gemini_mcp_client.chat(prompt)
+            
+            # Parse the JSON response
+            import json
+            import re
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                analysis = json.loads(json_match.group())
+                
+                return {
+                    'route': analysis.get('route', 'fallback'),
+                    'confidence': analysis.get('confidence', 0.8),
+                    'reason': analysis.get('analysis', 'LLM-driven context analysis'),
+                    'task_type': analysis.get('task_type', 'general'),
+                    'user_intent': analysis.get('user_intent', ''),
+                    'next_action': analysis.get('next_action', ''),
+                    'parameters': analysis.get('parameters', {}),
+                    'keyword_analysis': {'method': 'llm_context'},
+                    'ai_analysis': {'method': 'llm_context'}
+                }
+            else:
+                # Fallback if JSON parsing fails
+                return {
+                    'route': 'fallback',
+                    'confidence': 0.3,
+                    'reason': 'LLM context analysis failed to parse'
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Conversation context analysis failed: {e}")
+            return {
+                'route': 'fallback', 
+                'confidence': 0.2,
+                'reason': f'Context analysis error: {str(e)}'
+            }
+
     async def route_request(self, user_input: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         self.routing_stats['total_requests'] += 1
 
@@ -165,33 +297,11 @@ class CoreOrchestrator:
         ai_route = ai_analysis['best_route']
         ai_confidence = ai_analysis['confidence']
         
-        # Check for follow-up commands that should inherit context from previous requests
+        # Use LLM for intelligent conversation context analysis
         if conversation_history and len(conversation_history) > 1:
-            previous_user_msg = None
-            for msg in reversed(conversation_history[:-1]):  # Exclude current message
-                if 'user' in msg:
-                    previous_user_msg = msg['text']
-                    break
-            
-            if previous_user_msg and user_input.lower().strip() in ['summarize', 'summary', 'tell me more', 'details', 'more info']:
-                # Determine the context from the previous request
-                prev_keyword_analysis = await self._analyze_keywords(previous_user_msg)
-                if prev_keyword_analysis['best_route'] != 'fallback':
-                    final_route = prev_keyword_analysis['best_route']
-                    final_confidence = 0.8  # High confidence for contextual follow-up
-                    reasoning = f"Follow-up request continuing from previous {final_route} context"
-                    
-                    # Add email_intent_clarification task type for email summarization
-                    task_type = 'email_intent_clarification' if final_route == 'email' else ai_analysis.get('task_type', 'general')
-                    
-                    return {
-                        'route': final_route,
-                        'confidence': final_confidence,
-                        'reason': reasoning,
-                        'task_type': task_type,
-                        'keyword_analysis': keyword_analysis,
-                        'ai_analysis': ai_analysis
-                    }
+            context_analysis = await self._analyze_conversation_context(user_input, conversation_history)
+            if context_analysis['confidence'] > 0.7:
+                return context_analysis
 
         if keyword_route == ai_route and keyword_route != 'fallback':
             final_confidence = min((keyword_confidence + ai_confidence) / 2 * 1.5, 1.0)
@@ -246,6 +356,130 @@ class CoreOrchestrator:
             any(indicator in input_lower for indicator in complexity_indicators) or
             len(user_input.split()) > 20
         )
+
+    async def handle_agent_escalation(self, state: AssistantState) -> Dict[str, Any]:
+        """Handle escalation requests from agents with intelligent coordination."""
+        try:
+            escalation_request = state.get('escalation_request', {})
+            agent_help_request = state.get('agent_help_request', {})
+            
+            if escalation_request:
+                # Handle escalation from agent
+                escalated_from = escalation_request.get('escalated_from', 'unknown')
+                reason = escalation_request.get('reason', 'Unknown reason')
+                user_input = escalation_request.get('user_input', '')
+                
+                prompt = f"""As an intelligent orchestrator, handle this escalation from {escalated_from}:
+
+ESCALATION REASON: {reason}
+ORIGINAL USER REQUEST: {user_input}
+
+ORCHESTRATOR CAPABILITIES:
+1. Coordinate multiple agents for complex tasks
+2. Break down complex requests into agent-specific tasks
+3. Handle rate limiting and error recovery strategies
+4. Manage agent communication and data sharing
+5. Provide intelligent fallback responses
+
+DECISION OPTIONS:
+- "coordinate_agents": Plan multi-agent collaboration
+- "retry_with_strategy": Implement intelligent retry/backoff
+- "provide_alternative": Offer alternative approach
+- "request_user_clarification": Need more information from user
+
+Respond in JSON format:
+{{
+    "action": "coordinate_agents|retry_with_strategy|provide_alternative|request_user_clarification",
+    "plan": "Detailed plan for handling the escalation",
+    "agents_needed": ["email", "calendar", "search"],
+    "task_sequence": ["task1", "task2", "task3"],
+    "user_message": "Message to show user",
+    "parameters": {{"key": "value"}}
+}}"""
+
+                response = await self.gemini_mcp_client.chat(prompt)
+                return self._parse_orchestrator_response(response)
+                
+            elif agent_help_request:
+                # Handle agent collaboration request
+                requesting_agent = agent_help_request.get('requesting_agent', 'unknown')
+                help_from = agent_help_request.get('help_from', 'unknown')
+                reason = agent_help_request.get('reason', 'Unknown reason')
+                
+                return await self._coordinate_agent_collaboration(requesting_agent, help_from, reason, state)
+            
+            return {
+                'response': 'No escalation or help request found',
+                'metadata': {'handled_by': 'orchestrator'}
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Escalation handling failed: {e}")
+            return {
+                'response': 'I encountered an issue handling the escalation request.',
+                'metadata': {'error': str(e)}
+            }
+
+    async def _coordinate_agent_collaboration(self, requesting_agent: str, help_from: str, reason: str, state: AssistantState) -> Dict[str, Any]:
+        """Coordinate collaboration between agents."""
+        try:
+            user_input = state.get('user_input', '')
+            
+            prompt = f"""Coordinate collaboration between agents:
+
+REQUESTING AGENT: {requesting_agent}
+NEEDS HELP FROM: {help_from}
+REASON: {reason}
+USER REQUEST: {user_input}
+
+COLLABORATION STRATEGIES:
+1. Sequential execution: One agent completes, then passes to next
+2. Parallel execution: Agents work simultaneously on different aspects
+3. Data sharing: One agent provides data for another to use
+4. Confirmation handoff: First agent seeks second agent's verification
+
+Plan the optimal collaboration approach:
+{{
+    "collaboration_type": "sequential|parallel|data_sharing|confirmation",
+    "execution_plan": "Step by step plan",
+    "first_agent_task": "What the requesting agent should do",
+    "second_agent_task": "What the helper agent should do", 
+    "data_to_share": "What information needs to be passed",
+    "user_message": "Status update for user"
+}}"""
+
+            response = await self.gemini_mcp_client.chat(prompt)
+            return self._parse_orchestrator_response(response)
+            
+        except Exception as e:
+            return {
+                'response': f'Collaboration coordination failed: {str(e)}',
+                'metadata': {'error': str(e)}
+            }
+
+    def _parse_orchestrator_response(self, response: str) -> Dict[str, Any]:
+        """Parse orchestrator LLM response."""
+        try:
+            import json
+            import re
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                return {
+                    'response': parsed.get('user_message', response),
+                    'metadata': {
+                        'action': parsed.get('action', 'unknown'),
+                        'plan': parsed.get('plan', ''),
+                        'orchestrator_decision': parsed
+                    }
+                }
+        except:
+            pass
+        
+        return {
+            'response': response,
+            'metadata': {'parsed': False}
+        }
 
     async def process_complex_request(self, user_input: str, task_type: str = 'general') -> Dict[str, Any]:
         # For search queries, directly execute search and return concise results
