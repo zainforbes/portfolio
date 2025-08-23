@@ -55,7 +55,7 @@ async def list_events(
     except HttpError as e:
         if e.resp.status == 403 and "insufficientPermissions" in str(e):
             raise RuntimeError(
-                "Google Calendar token lacks required scope. Delete config/token.json "
-                "and re-auth with both Gmail+Calendar read-only scopes."
+                "Google Calendar token lacks required scope. Delete config/token_calendar.json "
+                "and re-auth with Calendar read-only scope."
             ) from e
         raise

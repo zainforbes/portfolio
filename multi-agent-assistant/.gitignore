@@ -57,6 +57,7 @@ credentials.json
 # Google API tokens
 config/*.pickle
 config/token.json
+config/*.json
 
 # =========================
 # Tests

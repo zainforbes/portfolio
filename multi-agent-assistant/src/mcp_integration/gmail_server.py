@@ -2,7 +2,6 @@ from typing import List, Dict, Optional
 import asyncio
 from base64 import urlsafe_b64decode
 from googleapiclient.discovery import build
-
 from src.utils.google_auth import get_credentials, GMAIL_SCOPES
 
 # --- helpers -------------------------------------------------

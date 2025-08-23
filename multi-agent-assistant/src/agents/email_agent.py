@@ -2,8 +2,23 @@ import re
 from typing import Dict, Any, List
 from .base_agent import BaseAgent
 from src.mcp_integration.mcp_client import MCPClient
+from src.intelligence.verifier import verify_response
+
 
 EMAIL_RE = re.compile(r'[\w\.-]+@[\w\.-]+\.\w+')
+EMAIL_RE_FULL = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
+
+def _sanitize_filters(f: Dict[str, Any]) -> Dict[str, Any]:
+    f = {**f}
+    s = (f.get("sender") or "").strip()
+    if not s or not EMAIL_RE_FULL.fullmatch(s):
+        f.pop("sender", None)  # only keep true emails
+    try:
+        d = int(f.get("newer_than_days") or 0)
+    except (TypeError, ValueError):
+        d = 0
+    f["newer_than_days"] = max(0, min(d, 365))
+    return f
 
 def _parse_email_filters_nl(text: str) -> Dict[str, Any]:
     """Fallback NL parser. Only set sender if an actual email is present."""
@@ -80,18 +95,18 @@ class EmailAgent(BaseAgent):
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
         routing_filters = (state.get("routing") or {}).get("filters", {}) or {}
-        # Fallback to NL parsing if router didn’t provide useful filters
-        if not any(k in routing_filters and routing_filters[k] for k in ("unread","newer_than_days","sender","subject","query_extra")):
+        if not any(routing_filters.get(k) for k in ("unread","newer_than_days","sender","subject","query_extra")):
             nl_filters = _parse_email_filters_nl(state.get("user_input",""))
-            # merge (NL overrides only when router didn’t set a value)
             routing_filters = {**routing_filters, **{k:v for k,v in nl_filters.items() if v}}
+
+        # NEW: sanitize
+        routing_filters = _sanitize_filters(routing_filters)
 
         q = _build_gmail_query(routing_filters)
         emails = await self.mcp.call_tool("gmail_list_recent", query=q or None, max_results=10)
 
         payload: Dict[str, Any] = {"query": q, "count": len(emails), "items": emails}
 
-        # optional enrichment (kept from your version)
         if self.comm and emails:
             import re as _re
             top_from = emails[0].get("from","")
@@ -100,6 +115,9 @@ class EmailAgent(BaseAgent):
                 domain = m.group(1).lower()
                 preview = await self.comm.ask(self.name, "search", domain)
                 payload["enrichment"] = {"sender_domain": domain, "search_preview": (preview.get("items") or [])[:3]}
+
+        # NEW: attach confidence & issues
+        payload.update(verify_response("email", payload))
 
         self.add_msg(state, "response", payload)
         return state

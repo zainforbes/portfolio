@@ -18,3 +18,4 @@ pandas
 numpy
 pytest
 pytest-asyncio
+tzdata
