@@ -1,79 +1,46 @@
-from dotenv import load_dotenv
-load_dotenv()
+# src/core/langgraph_workflow.py
 from typing import Dict
 from langgraph.graph import StateGraph
 from .state_schema import AssistantState
-# Tool registry (already implemented in your project)
+
 from src.mcp_integration.mcp_client import MCPClient
 from src.mcp_integration.search_server import web_search
-from src.mcp_integration.gmail_server import list_recent_emails, read_email, create_draft, send_email
+from src.mcp_integration.gmail_server  import list_recent_emails, read_email, send_email  # if you added send
 from src.mcp_integration.calendar_server import list_events, create_event, update_event, delete_event
 from src.utils.gemini_client import GeminiClient
-from src.intelligence.router import classify_request
+
+from src.agents.coordinator_agent import CoordinatorAgent
+from src.agents.default_agent     import DefaultAgent
+from src.agents.email_agent       import EmailAgent
+from src.agents.calendar_agent    import CalendarAgent
+from src.agents.search_agent      import SearchAgent
 
 MCP = MCPClient()
-MCP.register_tool("web_search", web_search)
+MCP.register_tool("web_search",        web_search)
 MCP.register_tool("gmail_list_recent", list_recent_emails)
-MCP.register_tool("gmail_read", read_email)
-MCP.register_tool("gmail_draft", create_draft)
-MCP.register_tool("gmail_send", send_email)
-MCP.register_tool("gcal_list_events", list_events)
+MCP.register_tool("gmail_read",        read_email)
+MCP.register_tool("gmail_send",       send_email)        # if implemented
+MCP.register_tool("gcal_list_events",  list_events)
 MCP.register_tool("gcal_create_event", create_event)
 MCP.register_tool("gcal_update_event", update_event)
 MCP.register_tool("gcal_delete_event", delete_event)
+
 GEM = GeminiClient()
 
-# Agents
-from src.agents.coordinator_agent import CoordinatorAgent
-from src.agents.default_agent import DefaultAgent
-from src.agents.email_agent import EmailAgent
-from src.agents.calendar_agent import CalendarAgent
-from src.agents.search_agent import SearchAgent
-from src.intelligence.communication import AgentCommunicationHub
-
 AGENTS: Dict[str, object] = {
-    "default": DefaultAgent(gemini=GEM),
-    "email":   EmailAgent(MCP, gemini=GEM),
-    "calendar":CalendarAgent(MCP, gemini=GEM),
-    "search":  SearchAgent(MCP, gemini=GEM),
+    "default":  DefaultAgent(gemini=GEM, mcp=MCP),
+    "email":    EmailAgent(MCP, gemini=GEM),
+    "calendar": CalendarAgent(MCP, gemini=GEM),
+    "search":   SearchAgent(MCP, gemini=GEM),
 }
+COORDINATOR = CoordinatorAgent(AGENTS, gemini=GEM)
 
-COMM = AgentCommunicationHub(AGENTS)
-for a in AGENTS.values():
-    if hasattr(a, "comm"):
-        a.comm = COMM
-
-COORDINATOR = CoordinatorAgent(AGENTS)
-
-# Simple keyword classifier (Gemini routing comes in Phase 3 Step 11)
-ROUTES = {
-    "email":    ["email", "gmail", "inbox", "message"],
-    "calendar": ["calendar", "meeting", "event", "schedule"],
-    "search":   ["search", "look up", "news", "web", "find"],
-}
-def classify_request_node(state: AssistantState) -> AssistantState:
-    text = (state.get("user_input") or "").strip()
-    routing = classify_request(text, GEM)  # {'agent','confidence','filters'}
-    state["routing"] = routing
-    state["current_agent"] = routing["agent"] if routing["confidence"] >= 0.6 else "default"
-    return state
-
-# Sync wrapper around async coordinator
 import asyncio
 def coordinator_node(state: AssistantState) -> AssistantState:
     return asyncio.run(COORDINATOR.execute(state))
 
 def build_workflow():
     graph = StateGraph(AssistantState)
-    graph.add_node("classifier", classify_request_node)
     graph.add_node("coordinator", coordinator_node)
-    graph.set_entry_point("classifier")
-    graph.add_edge("classifier", "coordinator")
+    graph.set_entry_point("coordinator")
     return graph.compile()
-
-if __name__ == "__main__":
-    wf = build_workflow()
-    print("\nEMAIL:",   wf.invoke({"user_input":"check my emails", "agent_messages":[]}))
-    print("\nCAL:",     wf.invoke({"user_input":"what meetings do I have later?", "agent_messages":[]}))
-    print("\nSEARCH:",  wf.invoke({"user_input":"search gemini api docs", "agent_messages":[]}))
-    print("\nDEFAULT:", wf.invoke({"user_input":"tell me a joke", "agent_messages":[]}))

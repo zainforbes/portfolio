@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 from typing import Dict, Any, List, Optional
 
@@ -15,7 +16,6 @@ st.set_page_config(page_title="Personal AI Assistant", page_icon="🤖", layout=
 
 
 def _get_gemini() -> Optional[GeminiClient]:
-    """Ensure a Gemini client exists in session; create it if possible."""
     api = os.getenv("GEMINI_API_KEY") or ""
     if not api:
         return None
@@ -37,32 +37,36 @@ if "wf" not in st.session_state:
     st.session_state["wf"] = build_workflow()
 
 if "gem" not in st.session_state:
-    st.session_state["gem"] = None  # created lazily
+    st.session_state["gem"] = None  # lazy
 
 if "chat" not in st.session_state:
-    st.session_state["chat"] = []  # UI transcript
+    st.session_state["chat"] = []  # UI transcript (simple)
 
 if "agent_messages_state" not in st.session_state:
     st.session_state["agent_messages_state"] = []  # tool/agent state
 
 if "pending_confirm" not in st.session_state:
-    st.session_state["pending_confirm"] = None  # holds confirm intents
+    st.session_state["pending_confirm"] = None  # {"user_input": ..., "confirm": True}
 
 if "llm_history" not in st.session_state:
-    st.session_state["llm_history"] = []  # rolling LLM memory (list of {"role","content"})
+    st.session_state["llm_history"] = []  # rolling chat memory
 
-# Warm-up LLM once if key is present (does nothing if already set)
+if "pending_plan" not in st.session_state:
+    st.session_state["pending_plan"] = None  # persisted planner plan for resume
+
+if "plan_cursor" not in st.session_state:
+    st.session_state["plan_cursor"] = None  # current step index
+
+# Warm-up LLM if key exists
 if st.session_state.get("gem") is None and os.getenv("GEMINI_API_KEY"):
     _get_gemini()
 
 
 # -----------------------------
-# Helpers: rendering
+# Helper renders
 # -----------------------------
 def _md_link(url: str, text: Optional[str] = None) -> str:
-    text = text or url
-    return f"[{text}]({url})"
-
+    return f"[{text or url}]({url})"
 
 def render_search(payload: Dict[str, Any]):
     items = (payload or {}).get("items") or []
@@ -74,7 +78,6 @@ def render_search(payload: Dict[str, Any]):
         snip = it.get("snippet") or ""
         if snip:
             st.caption(snip)
-
 
 def render_emails(payload: Dict[str, Any]):
     items = (payload or {}).get("items") or []
@@ -91,41 +94,32 @@ def render_emails(payload: Dict[str, Any]):
             if e.get("id"):
                 st.code(e["id"], language="text")
 
-
-def _format_time_str(s: str) -> str:
-    return s or ""
-
-
 def render_calendar(payload: Dict[str, Any]):
-    window = payload.get("window") or {}
-    st.caption(
-        f"Window: {window.get('label','upcoming')} | "
-        f"{window.get('time_min','')} → {window.get('time_max','(open)')}"
-    )
+    window = (payload or {}).get("window") or {}
+    if window:
+        st.caption(f"Window: {window.get('label','upcoming')} | "
+                   f"{window.get('time_min','')} → {window.get('time_max','(open)')}")
     if payload.get("summary_llm"):
         st.write(payload["summary_llm"])
-    items = payload.get("items") or []
+    items = (payload or {}).get("items") or []
     if not items:
         st.info("No events found.")
         return
     for ev in items:
-        with st.expander(
-            f"{ev.get('summary','(no title)')} | "
-            f"{_format_time_str(ev.get('start',''))} → {_format_time_str(ev.get('end',''))}",
-            expanded=False,
-        ):
-            st.markdown(f"**When:** {_format_time_str(ev.get('start',''))} → {_format_time_str(ev.get('end',''))}")
-            loc = ev.get("location", "")
+        title = ev.get("summary","(no title)")
+        start = ev.get("start","")
+        end   = ev.get("end","")
+        with st.expander(f"{title} | {start} → {end}", expanded=False):
+            st.markdown(f"**When:** {start} → {end}")
+            loc = ev.get("location","")
             if loc:
                 st.markdown(f"**Location:** {loc}")
-            st.code(ev.get("id", ""), language="text")
-
-    confs = payload.get("conflicts") or []
+            st.code(ev.get("id",""), language="text")
+    confs = (payload or {}).get("conflicts") or []
     if confs:
         st.warning("Conflicts detected:")
         for c in confs:
             st.markdown(f"- **{c.get('a','')}** overlaps **{c.get('b','')}** ({c.get('range','')})")
-
 
 def render_generic(payload: Dict[str, Any]):
     if not payload:
@@ -136,25 +130,57 @@ def render_generic(payload: Dict[str, Any]):
     else:
         st.json(payload)
 
-
 def render_confirmation(payload: Dict[str, Any], last_user_text: str):
     msg = payload.get("message") or "Confirm?"
     st.info(msg)
-    proposal = payload.get("proposal") or payload.get("target") or payload.get("event") or {}
-    if proposal:
-        with st.expander("Proposed details", expanded=False):
-            st.json(proposal)
+    details = payload.get("proposal") or payload.get("target") or payload.get("event") or {}
+    if details:
+        with st.expander("Proposed details", expanded=True):
+            st.json(details)
 
-    col1, col2 = st.columns(2)
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1:
         if st.button("✅ Confirm", key="confirm_btn"):
             st.session_state["pending_confirm"] = {"user_input": last_user_text, "confirm": True}
             st.experimental_rerun()
-    with col2:
+    with c2:
         if st.button("❌ Cancel", key="cancel_btn"):
             st.session_state["pending_confirm"] = None
+            # Clear pending plan/cursor if any
+            st.session_state["pending_plan"] = None
+            st.session_state["plan_cursor"] = None
             st.success("Cancelled.")
             st.experimental_rerun()
+
+def render_planner_trace(messages: List[Dict[str,Any]]):
+    plan_msg = None
+    for m in reversed(messages):
+        if m.get("sender") == "coordinator" and m.get("message_type") == "plan":
+            plan_msg = m
+            break
+    if not plan_msg:
+        return
+    pl = plan_msg.get("payload", {})
+    with st.expander("🧠 Reasoning trace (planner)", expanded=False):
+        thoughts = pl.get("thoughts") or []
+        if thoughts:
+            st.markdown("**Plan:**")
+            for t in thoughts:
+                st.markdown(f"- {t}")
+        steps = pl.get("steps") or []
+        if steps:
+            st.markdown("**Steps:**")
+            for s in steps:
+                badge = "🟢" if not s.get("confirmation_required") else "🟡"
+                st.markdown(
+                    f"{badge} **{s.get('i')}** · `{s.get('mode')}` → **{s.get('agent')}**.{s.get('tool')}  "
+                    f"&nbsp;&nbsp; _{s.get('explain','')}_"
+                )
+        fol = pl.get("followups") or []
+        if fol:
+            st.markdown("**Possible next:**")
+            for f in fol:
+                st.markdown(f"- {f}")
 
 
 # -----------------------------
@@ -162,35 +188,37 @@ def render_confirmation(payload: Dict[str, Any], last_user_text: str):
 # -----------------------------
 def run_turn(user_text: str, confirm: bool = False):
     with st.status("🤖 Thinking…", expanded=False) as status:
-        status.update(label="🤖 Thinking… (routing)")
-
-        out = st.session_state["wf"].invoke(
-            {
-                "user_input": user_text,
-                "agent_messages": st.session_state["agent_messages_state"],
-                "confirm": confirm,
-                "history": st.session_state["llm_history"],  # pass rolling chat history to DefaultAgent
-            }
-        )
+        status.update(label="🤖 Thinking… (planner)")
+        # pass through any saved pending plan/cursor to the workflow
+        out = st.session_state["wf"].invoke({
+            "user_input": user_text,
+            "agent_messages": st.session_state["agent_messages_state"],
+            "confirm": confirm,
+            "history": st.session_state["llm_history"],
+            "pending_plan": st.session_state.get("pending_plan"),
+            "plan_cursor": st.session_state.get("plan_cursor"),
+        })
 
         st.session_state["agent_messages_state"] = out.get("agent_messages", [])
+        # capture plan/cursor/blackboard from the graph state (if the coordinator set them)
+        st.session_state["pending_plan"] = out.get("pending_plan")
+        st.session_state["plan_cursor"] = out.get("plan_cursor")
         st.session_state["llm_history"] = out.get("history", st.session_state["llm_history"])
 
-        current_agent = out.get("current_agent") or "default"
-        status.update(label=f"🤖 Thinking… (agent: {current_agent})")
+        # who did the last speaking?
+        last = st.session_state["agent_messages_state"][-1] if st.session_state["agent_messages_state"] else {}
+        sender = last.get("sender")
+        mtype  = last.get("message_type")
+        payload= last.get("payload") or {}
 
-    last = st.session_state["agent_messages_state"][-1] if st.session_state["agent_messages_state"] else {}
-    sender = last.get("sender", current_agent)
-    mtype = last.get("message_type")
-    payload = last.get("payload") or {}
+    # Show planner trace from this turn
+    render_planner_trace(st.session_state["agent_messages_state"])
 
     with st.chat_message("assistant", avatar="🤖"):
-        # confirmation flow
         if payload.get("requires_confirmation"):
             render_confirmation(payload, user_text)
             return
 
-        # agent-specific renders
         if sender == "search" and mtype == "response":
             st.subheader("🔎 Web results")
             render_search(payload.get("payload") or payload)
@@ -207,42 +235,24 @@ def run_turn(user_text: str, confirm: bool = False):
                 with st.expander("Details"):
                     st.code(str(raw))
         else:
-            # default chat path
-            text = (payload.get("result") or "").strip()
-
-            # Robust fallback if any legacy handler emitted sentinel/empty
-            if not text or text == "(No LLM configured)." or payload.get("fallback_llm"):
+            # default/other
+            text = (payload.get("summary_llm") or payload.get("result") or "").strip()
+            if not text:
+                # final fallback to LLM chat if absolutely nothing came back
                 gem = st.session_state.get("gem") or _get_gemini()
-                if not gem:
-                    k = os.getenv("GEMINI_API_KEY") or ""
-                    st.warning(f"(No LLM configured — GEMINI_API_KEY={'present' if k else 'missing'}.)")
-                    return
+                if gem:
+                    hist = st.session_state["llm_history"][-10:]
+                    ctx = "\n".join([f"{h['role'].capitalize()}: {h['content']}" for h in hist] + [f"User: {user_text}"])
+                    text = gem.chat(ctx) or ""
+            st.write(text or "Done.")
 
-                # build a lightweight context from history
-                conv = st.session_state["llm_history"][-10:]
-                hist_lines: List[str] = []
-                for h in conv:
-                    hist_lines.append(f"{h['role'].capitalize()}: {h['content']}")
-                hist_lines.append(f"User: {user_text}")
-                prompt_for_fallback = "\n".join(hist_lines)
-
-                text = (gem.chat(prompt_for_fallback) or "").strip()
-                if text and "anything else i can help with" not in text.lower():
-                    text += "\n\nAnything else I can help with?"
-
-                # keep history in sync when default handled in UI
-                st.session_state["llm_history"].append({"role": "user", "content": user_text})
-                st.session_state["llm_history"].append({"role": "assistant", "content": text})
-
-            st.write(text)
-
-    # UI transcript
+    # Append to transcript
     st.session_state["chat"].append({"role": "user", "content": user_text})
     st.session_state["chat"].append({"role": "assistant", "content": payload})
 
 
 # -----------------------------
-# Sidebar: status & controls
+# Sidebar
 # -----------------------------
 with st.sidebar:
     st.title("⚙️ Controls")
@@ -254,9 +264,9 @@ with st.sidebar:
     st.write("Google OAuth: check tokens in `config/`")
     st.divider()
     st.write("**Notes**")
-    st.markdown("- Sending emails and modifying calendar require confirmation.")
+    st.markdown("- Mutating actions (send email, create/update/delete events) prompt for confirmation.")
+    st.markdown("- Planner can run multiple steps per turn; complex tasks may pause and resume.")
     st.markdown("- Timezone assumed: **Africa/Johannesburg**.")
-    st.markdown("- Normal chat uses **Gemini** when no agent is selected.")
     st.divider()
     with st.expander("LLM diagnostics"):
         key = os.getenv("GEMINI_API_KEY") or ""
@@ -280,7 +290,7 @@ with st.sidebar:
 # -----------------------------
 st.title("Personal AI Assistant")
 
-# Show previous conversation
+# show the simple transcript (optional)
 for msg in st.session_state["chat"]:
     if msg["role"] == "user":
         with st.chat_message("user"):
@@ -289,26 +299,24 @@ for msg in st.session_state["chat"]:
         with st.chat_message("assistant", avatar="🤖"):
             content = msg["content"]
             if isinstance(content, dict):
-                if isinstance(content.get("result"), str):
-                    st.write(content["result"])
-                elif "summary_llm" in content and isinstance(content["summary_llm"], str):
+                if "summary_llm" in content and isinstance(content["summary_llm"], str):
                     st.write(content["summary_llm"])
+                elif isinstance(content.get("result"), str):
+                    st.write(content["result"])
                 else:
                     st.json(content)
             else:
                 st.write(content)
 
-# Auto-run a pending confirmation if present
+# Auto-run a pending confirmation (resume plan)
 if st.session_state["pending_confirm"]:
     pc = st.session_state["pending_confirm"]
     run_turn(pc["user_input"], confirm=True)
     st.session_state["pending_confirm"] = None
 
 # Chat input
-prompt = st.chat_input(
-    "Type a message, e.g. “show unread emails from the last 7 days”, "
-    "“create event 'Demo' tomorrow 10:00-10:30”, or just chat..."
-)
+prompt = st.chat_input("Type a message… e.g. “show unread emails from the last 7 days”, "
+                       "“create event 'Demo' tomorrow 10:00–10:30”, or just chat…")
 if prompt:
     with st.chat_message("user"):
         st.write(prompt)

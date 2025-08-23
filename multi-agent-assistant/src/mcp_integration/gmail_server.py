@@ -1,6 +1,8 @@
 from __future__ import annotations
 import base64, asyncio
-from typing import List, Dict, Optional
+from email.message import EmailMessage
+import base64
+from typing import List, Dict, Any, Optional
 from email.mime.text import MIMEText
 from email.utils import formataddr
 from googleapiclient.discovery import build
@@ -63,3 +65,29 @@ async def send_email(to: List[str], subject: str, body: str, cc: List[str] | Non
     raw = _build_raw(None, to, subject, body, cc, bcc)
     req = service.users().messages().send(userId="me", body={"raw": raw})
     return await asyncio.to_thread(req.execute)
+
+async def send_email(to: str, subject: str, body: str) -> Dict[str, Any]:
+    """Send an email via Gmail API."""
+    creds = get_credentials(GMAIL_SCOPES_RW)  # ensure scope includes gmail.send
+    service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
+
+    msg = EmailMessage()
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+    req = service.users().messages().send(userId="me", body={"raw": raw})
+    res = await asyncio.to_thread(req.execute)
+    return {"id": res.get("id"), "status": "sent"}
+
+async def mark_read(ids: List[str]) -> Dict[str, Any]:
+    """Batch remove UNREAD label."""
+    creds = get_credentials(GMAIL_SCOPES_RW)
+    service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
+    req = service.users().messages().batchModify(
+        userId="me",
+        body={"ids": ids, "removeLabelIds": ["UNREAD"]}
+    )
+    res = await asyncio.to_thread(req.execute)
+    return {"modified": res.get("resultSizeEstimate", len(ids))}
