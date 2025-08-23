@@ -24,6 +24,7 @@ from src.agents.default_agent import DefaultAgent
 from src.agents.email_agent import EmailAgent
 from src.agents.calendar_agent import CalendarAgent
 from src.agents.search_agent import SearchAgent
+from src.intelligence.communication import AgentCommunicationHub
 
 AGENTS: Dict[str, object] = {
     "default": DefaultAgent(),
@@ -31,6 +32,11 @@ AGENTS: Dict[str, object] = {
     "calendar":CalendarAgent(MCP, gemini=GEM),
     "search":  SearchAgent(MCP, gemini=GEM),
 }
+
+COMM = AgentCommunicationHub(AGENTS)
+for a in AGENTS.values():
+    if hasattr(a, "comm"):
+        a.comm = COMM
 
 COORDINATOR = CoordinatorAgent(AGENTS)
 
