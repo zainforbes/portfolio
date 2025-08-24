@@ -1,4 +1,3 @@
-# src/agents/calendar_agent.py
 from __future__ import annotations
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime, timedelta
@@ -22,35 +21,37 @@ def _end_of_day(dt: datetime) -> datetime:
     return dt.replace(hour=23, minute=59, second=59, microsecond=0)
 
 # ---------- view window parsing ----------
-def _parse_view_window(text: str) -> Tuple[Optional[str], Optional[str], str]:
-    t = (text or "").lower()
+def _window_to_bounds(window: str) -> Tuple[Optional[str], Optional[str], str]:
+    t = (window or "").lower().strip()
     now = datetime.now(ZA)
-    label = "upcoming"
-
-    if "tomorrow" in t:
-        label = "tomorrow"
+    if t in ("tomorrow",):
         day = now + timedelta(days=1)
-        return _to_utc_z(_start_of_day(day)), _to_utc_z(_end_of_day(day)), label
-    if "today" in t:
-        label = "today"
-        return _to_utc_z(_start_of_day(now)), _to_utc_z(_end_of_day(now)), label
-    if "next 7 days" in t or "next seven days" in t:
-        label = "next 7 days"
-        return _to_utc_z(now), _to_utc_z(now + timedelta(days=7)), label
-    if "this week" in t:
-        label = "this week"
+        return _to_utc_z(_start_of_day(day)), _to_utc_z(_end_of_day(day)), "tomorrow"
+    if t in ("today",):
+        return _to_utc_z(_start_of_day(now)), _to_utc_z(_end_of_day(now)), "today"
+    if t in ("next 7 days", "next seven days"):
+        return _to_utc_z(now), _to_utc_z(now + timedelta(days=7)), "next 7 days"
+    if t in ("this week",):
         start = _start_of_day(now - timedelta(days=now.weekday()))
         end   = _end_of_day(start + timedelta(days=6))
-        return _to_utc_z(start), _to_utc_z(end), label
-    if "next week" in t:
-        label = "next week"
+        return _to_utc_z(start), _to_utc_z(end), "this week"
+    if t in ("next week",):
         days_until_mon = (7 - now.weekday()) % 7 or 7
         start = _start_of_day(now + timedelta(days=days_until_mon))
         end   = _end_of_day(start + timedelta(days=6))
-        return _to_utc_z(start), _to_utc_z(end), label
+        return _to_utc_z(start), _to_utc_z(end), "next week"
+    # default: upcoming
+    return _to_utc_z(now), None, "upcoming"
 
-    # default: from now forward
-    return _to_utc_z(now), None, label
+def _parse_view_window(text: str) -> Tuple[Optional[str], Optional[str], str]:
+    # fallback NL parsing
+    t = (text or "").lower()
+    if "tomorrow" in t: return _window_to_bounds("tomorrow")
+    if "today" in t:    return _window_to_bounds("today")
+    if "next 7 days" in t or "next seven days" in t: return _window_to_bounds("next 7 days")
+    if "this week" in t: return _window_to_bounds("this week")
+    if "next week" in t: return _window_to_bounds("next week")
+    return _window_to_bounds("")
 
 def _parse_iso_local(s: str) -> datetime:
     if not s:
@@ -78,34 +79,70 @@ def _find_conflicts(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             conflicts.append({"a": a.get("summary",""), "b": b.get("summary",""), "range": f'{a.get("start","")} → {b.get("end","")}'})
     return conflicts
 
-# ---------- intent parsing ----------
+# ---------- small parsing helpers ----------
 CREATE_RE = re.compile(r"\b(create|add|schedule)\b", re.I)
 UPDATE_RE = re.compile(r"\b(update|move|reschedule|change)\b", re.I)
 DELETE_RE = re.compile(r"\b(cancel|delete|remove)\b", re.I)
 
-def _parse_create(text: str) -> Optional[Dict[str, Any]]:
+def _parse_local_time(s: str, base: Optional[datetime] = None) -> datetime:
+    """Parse 'tomorrow 20:00', 'today 8:30', '2025-08-25 13:00', '8pm' relative to ZA."""
+    base = base or datetime.now(ZA)
+    s0 = (s or "").strip().lower()
+
+    # yyyy-mm-dd hh:mm?
+    m_full = re.match(r"(\d{4}-\d{2}-\d{2})(?:[ T](\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?$", s0)
+    if m_full:
+        day = datetime.fromisoformat(m_full.group(1)).replace(tzinfo=ZA)
+        if m_full.group(2):
+            hh = int(m_full.group(2))
+            mm = int(m_full.group(3) or 0)
+            ap = (m_full.group(4) or "").lower()
+            if ap == "pm" and hh < 12: hh += 12
+            if ap == "am" and hh == 12: hh = 0
+            return day.replace(hour=hh, minute=mm)
+        return _start_of_day(day)
+
+    # "tomorrow" or "today" with optional time
+    if s0.startswith("tomorrow"):
+        day = (base + timedelta(days=1))
+        rest = s0.replace("tomorrow", "").strip()
+    elif s0.startswith("today"):
+        day = base
+        rest = s0.replace("today", "").strip()
+    else:
+        day = base
+        rest = s0
+
+    if rest:
+        m = re.match(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", rest)
+        if m:
+            hh = int(m.group(1)); mm = int(m.group(2) or 0); ap = (m.group(3) or "").lower()
+            if ap == "pm" and hh < 12: hh += 12
+            if ap == "am" and hh == 12: hh = 0
+            return day.replace(hour=hh, minute=mm)
+
+    # default
+    return day.replace(hour=10, minute=0)
+
+def _parse_create_from_text(text: str) -> Optional[Dict[str, Any]]:
     t = text or ""
-    # title: quoted or after 'called/titled/about'
     m_title = re.search(r"'([^']+)'|\"([^\"]+)\"|(?:called|titled|about)\s+([^\n]+)", t, flags=re.I)
     title = next((g for g in (m_title.group(1) if m_title else None,
                               m_title.group(2) if m_title else None,
                               m_title.group(3) if m_title else None) if g), "New event")
-
-    # date keywords
     now = datetime.now(ZA)
     day = now
     if re.search(r"\btomorrow\b", t, flags=re.I): day = now + timedelta(days=1)
     elif re.search(r"\b(\d{4}-\d{2}-\d{2})\b", t):
         day = datetime.fromisoformat(re.search(r"\b(\d{4}-\d{2}-\d{2})\b", t).group(1)).replace(tzinfo=ZA)
 
-    # time range e.g. 10:00-10:30 or 3pm to 4pm
     def _parse_time(s: str) -> datetime:
         m = re.match(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", s.strip(), flags=re.I)
         if not m:
             return day.replace(hour=10, minute=0)
-        h = int(m.group(1)); mins = int(m.group(2) or 0); ampm = (m.group(3) or "").lower()
-        if ampm == "pm" and h < 12: h += 12
-        if ampm == "am" and h == 12: h = 0
+        h = int(m.group(1)); mins = int(m.group(2) or 0); ap=(m.group(3) or "").lower()
+        if ap == "pm" and h < 12: h += 12
+        if ap == "am" and h == 12: h = 0
         return day.replace(hour=h, minute=mins)
 
     m_range = re.search(r"(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|to|–|—)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)", t, flags=re.I)
@@ -113,7 +150,6 @@ def _parse_create(text: str) -> Optional[Dict[str, Any]]:
         start = _parse_time(m_range.group(1))
         end   = _parse_time(m_range.group(2))
     else:
-        # default 30 min slot at 10:00-10:30
         start = day.replace(hour=10, minute=0)
         end   = start + timedelta(minutes=30)
 
@@ -138,110 +174,184 @@ class CalendarAgent(BaseAgent):
     def __init__(self, mcp: MCPClient, gemini=None):
         super().__init__(gemini=gemini, mcp=mcp)
 
-    async def _view(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        text = state.get("user_input","")
-        tmin, tmax, label = _parse_view_window(text)
-        events = await self.mcp.call_tool("gcal_list_events", max_results=20, time_min=tmin, time_max=tmax)
+    # ---- planner-aware paths ----
+    async def _plan_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        state = args["_state"]
+        window = (args.get("window") or "").strip().lower()
+        if window:
+            tmin, tmax, label = _window_to_bounds(window)
+        else:
+            tmin, tmax, label = _parse_view_window(state.get("user_input",""))
+
+        events = await self.mcp.call_tool("gcal_list_events", max_results=int(args.get("max_results") or 20), time_min=tmin, time_max=tmax)
         events_sorted = sorted(events, key=lambda e: _parse_iso_local(e.get("start","")))
         payload: Dict[str, Any] = {
             "window": {"label": label, "time_min": tmin, "time_max": tmax},
             "summary": f"{len(events_sorted)} events",
             "items": events_sorted,
             "conflicts": _find_conflicts(events_sorted),
+            "suggested_prompts": ["create 'Standup' tomorrow 09:00-09:15", "move event <id> to 11:00-11:30", "delete event <id>"],
         }
         if self.gemini and events_sorted:
             bullets = "\n".join(f"- {e.get('summary','(no title)')} | {e.get('start','')} → {e.get('end','')}" for e in events_sorted[:6])
             prompt = "Summarize these events and note any conflicts (brief):\n" + bullets
             payload["summary_llm"] = self.gemini.chat(prompt)
+
         payload.update(verify_response("calendar", payload))
         self.add_msg(state, "response", payload)
         return state
 
-    async def _create(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        spec = _parse_create(state.get("user_input","")) or {}
+    async def _plan_create(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        state = args["_state"]
+        summary = (args.get("summary") or "").strip()
+        start_local = (args.get("start_local") or "").strip()
+        end_local   = (args.get("end_local") or "").strip()
+        location    = (args.get("location") or "").strip()
+        description = (args.get("description") or "").strip()
+        attendees   = args.get("attendees") or None
+        if isinstance(attendees, str): attendees = [attendees]
+
+        if start_local and end_local:
+            sdt = _parse_local_time(start_local)
+            edt = _parse_local_time(end_local, base=sdt)
+            spec = {
+                "summary": summary or "New event",
+                "start_iso": _to_utc_z(sdt),
+                "end_iso": _to_utc_z(edt),
+                "location": location,
+                "description": description,
+                "attendees": attendees,
+            }
+        else:
+            # fallback to NL parsing from the user's text
+            spec = _parse_create_from_text(state.get("user_input","")) or {}
+
         if not state.get("confirm"):
             self.add_msg(state, "response", {
                 "requires_confirmation": True,
                 "message": "Create this calendar event?",
                 "proposal": spec,
+                "agent": "calendar",
                 "intent": "calendar.create",
+                "confirm_context": {"agent":"calendar","tool":"gcal_create_event","args": spec},
             })
             return state
-        # confirmed: perform
+
         created = await self.mcp.call_tool("gcal_create_event", **spec)
-        payload = {"result": "Event created.", "event": created}
+        payload: Dict[str, Any] = {"result": "Event created.", "event": created}
         if self.gemini:
             prompt = (f"Confirm to the user that the event '{created.get('summary','')}' "
                       f"was created for {created.get('start','')} → {created.get('end','')}.")
             payload["summary_llm"] = self.gemini.chat(prompt)
+        payload.update(verify_response("calendar", payload))
         self.add_msg(state, "response", payload)
         return state
 
-    async def _update(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        # Heuristic: expect an event id and maybe new times/title
-        text = state.get("user_input","")
-        m_id = re.search(r"\b([a-zA-Z0-9_\-]{10,})\b", text)
-        if not m_id:
+    async def _plan_update(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        state = args["_state"]
+        event_id = (args.get("event_id") or "").strip()
+        if not event_id:
             self.add_msg(state, "response", {"result": "Please provide the event ID to update."})
             return state
 
-        spec = {"event_id": m_id.group(1)}
-        # optional title
-        m_title = re.search(r"(?:to|as)\s+'([^']+)'|\"([^\"]+)\"", text)
-        if m_title:
-            spec["summary"] = m_title.group(1) or m_title.group(2)
-
-        # optional time range
-        m_range = re.search(r"(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|to|–|—)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)", text, flags=re.I)
-        if m_range:
-            now = datetime.now(ZA)
-            def _pt(s): 
-                h = re.match(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", s, flags=re.I); 
-                hh=int(h.group(1)); mm=int(h.group(2) or 0); ap=(h.group(3) or "").lower()
-                if ap=="pm" and hh<12: hh+=12
-                if ap=="am" and hh==12: hh=0
-                return now.replace(hour=hh, minute=mm)
-            spec["start_iso"] = _to_utc_z(_pt(m_range.group(1)))
-            spec["end_iso"]   = _to_utc_z(_pt(m_range.group(2)))
+        patch: Dict[str, Any] = {"event_id": event_id}
+        if "summary" in args and args["summary"] is not None:
+            patch["summary"] = (args["summary"] or "").strip()
+        if "location" in args and args["location"] is not None:
+            patch["location"] = (args["location"] or "").strip()
+        if "description" in args and args["description"] is not None:
+            patch["description"] = (args["description"] or "").strip()
+        if args.get("start_local"):
+            sdt = _parse_local_time(str(args["start_local"]))
+            patch["start_iso"] = _to_utc_z(sdt)
+        if args.get("end_local"):
+            edt = _parse_local_time(str(args["end_local"]))
+            patch["end_iso"] = _to_utc_z(edt)
 
         if not state.get("confirm"):
             self.add_msg(state, "response", {
                 "requires_confirmation": True,
                 "message": "Update this event?",
-                "proposal": spec,
+                "proposal": patch,
+                "agent": "calendar",
                 "intent": "calendar.update",
+                "confirm_context": {"agent":"calendar","tool":"gcal_update_event","args": patch},
             })
             return state
 
-        updated = await self.mcp.call_tool("gcal_update_event", **spec)
-        self.add_msg(state, "response", {"result": "Event updated.", "event": updated})
+        updated = await self.mcp.call_tool("gcal_update_event", **patch)
+        payload = {"result": "Event updated.", "event": updated}
+        payload.update(verify_response("calendar", payload))
+        self.add_msg(state, "response", payload)
         return state
 
-    async def _delete(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        text = state.get("user_input","")
-        m_id = re.search(r"\b([a-zA-Z0-9_\-]{10,})\b", text)
-        if not m_id:
+    async def _plan_delete(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        state = args["_state"]
+        event_id = (args.get("event_id") or "").strip()
+        if not event_id:
             self.add_msg(state, "response", {"result": "Please provide the event ID to delete."})
             return state
-        spec = {"event_id": m_id.group(1)}
+
         if not state.get("confirm"):
             self.add_msg(state, "response", {
                 "requires_confirmation": True,
                 "message": "Delete this event?",
-                "proposal": spec,
+                "proposal": {"event_id": event_id},
+                "agent": "calendar",
                 "intent": "calendar.delete",
+                "confirm_context": {"agent":"calendar","tool":"gcal_delete_event","args": {"event_id": event_id}},
             })
             return state
-        ok = await self.mcp.call_tool("gcal_delete_event", **spec)
-        self.add_msg(state, "response", {"result": "Event deleted." if ok else "Delete failed."})
+
+        ok = await self.mcp.call_tool("gcal_delete_event", event_id=event_id)
+        payload = {"result": "Event deleted." if ok else "Delete failed."}
+        payload.update(verify_response("calendar", payload))
+        self.add_msg(state, "response", payload)
         return state
 
-    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    # ---- NL fallbacks ----
+    async def _view(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        tmin, tmax, label = _parse_view_window(state.get("user_input",""))
+        return await self._plan_list({"window": label, "max_results": 20, "_state": state})
+
+    async def _create(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._plan_create({"_state": state})
+
+    async def _update(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        # fallback: expect ID and maybe new range in the text
         text = state.get("user_input","")
-        if DELETE_RE.search(text):
-            return await self._delete(state)
-        if UPDATE_RE.search(text):
-            return await self._update(state)
-        if CREATE_RE.search(text):
-            return await self._create(state)
+        m_id = re.search(r"\b([a-zA-Z0-9_\-]{10,})\b", text)
+        args: Dict[str, Any] = {"_state": state}
+        if m_id:
+            args["event_id"] = m_id.group(1)
+        return await self._plan_update(args)
+
+    async def _delete(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        text = state.get("user_input","")
+        m_id = re.search(r"\b([a-zA-Z0-9_\-]{10,})\b", text)
+        args: Dict[str, Any] = {"_state": state}
+        if m_id:
+            args["event_id"] = m_id.group(1)
+        return await self._plan_delete(args)
+
+    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        step = state.get("current_step") or {}
+        tool = (step.get("tool") or "").strip()
+        args = (step.get("args") or {}).copy()
+        args["_state"] = state
+
+        if tool == "gcal_list_events":
+            return await self._plan_list(args)
+        if tool == "gcal_create_event":
+            return await self._plan_create(args)
+        if tool == "gcal_update_event":
+            return await self._plan_update(args)
+        if tool == "gcal_delete_event":
+            return await self._plan_delete(args)
+
+        # NL fallbacks
+        text = state.get("user_input","")
+        if DELETE_RE.search(text):  return await self._delete(state)
+        if UPDATE_RE.search(text):  return await self._update(state)
+        if CREATE_RE.search(text):  return await self._create(state)
         return await self._view(state)
