@@ -80,15 +80,54 @@ def _merge_memory_patch(state: AssistantState, payload: Dict[str, Any]):
 
 def _get_from_memory(state: Dict[str, Any], path: str) -> str:
     """
-    Resolve a simple dotted path like 'search.last_summary' from state["memory"].
+    Enhanced memory path resolution that handles multiple storage patterns.
+    Supports paths like:
+    - "search.last_summary" (current storage)
+    - "search.langgraph_summary.summary" (planner generated)
+    - "search.react_features.summary" (planner generated)
     """
-    cur: Any = state.get("memory") or {}
-    for part in (path or "").split("."):
+    if not path:
+        return ""
+        
+    mem = state.get("memory", {})
+    parts = path.split(".")
+    
+    # Direct path resolution first
+    cur = mem
+    for part in parts:
         if isinstance(cur, dict) and part in cur:
             cur = cur[part]
         else:
-            return ""
-    return cur if isinstance(cur, str) else ""
+            # Path not found, try fallback patterns
+            break
+    else:
+        # Successfully resolved the full path
+        return cur if isinstance(cur, str) else ""
+    
+    # Fallback patterns for common mismatches
+    if parts[0] == "search":
+        search_mem = mem.get("search", {})
+        
+        # Try common search result locations
+        fallback_paths = [
+            "last_summary",  # Current storage location
+            "summary",       # Alternative
+        ]
+        
+        for fallback in fallback_paths:
+            if fallback in search_mem:
+                result = search_mem[fallback]
+                if isinstance(result, str) and result.strip():
+                    return result
+        
+        # Try last_search location (used by some agents)
+        last_search = mem.get("last_search", {})
+        if "summary" in last_search:
+            result = last_search["summary"]
+            if isinstance(result, str) and result.strip():
+                return result
+    
+    return ""
 
 # Mutating actions that require confirmation
 _MUTATING = {
@@ -101,8 +140,7 @@ _MUTATING = {
 # ---------- Nodes (async) ----------
 async def analyze(state: AssistantState) -> AssistantState:
     """
-    Gemini plans. If a confirm_context is provided with confirm=True,
-    short-circuit and run that as a one-step plan.
+    Enhanced planner with workflow context awareness - FIXED VERSION
     """
     _ensure_mem(state)
 
@@ -118,22 +156,46 @@ async def analyze(state: AssistantState) -> AssistantState:
     user_text = state.get("user_input", "")
     history   = state.get("history", []) or []
     mem       = state.get("memory", {})
+    current_plan = state.get("plan")  # Pass current plan for context
 
-    # Try new signature (with memory); fall back if not supported
+    # Enhanced planning with context awareness
     try:
-        plan = make_plan(user_text, history, GEM, memory=mem)
-        print(f"🔍 DEBUG - User input: {user_text}") #DEBUG
-        print(f"🔍 DEBUG - Generated plan: {json.dumps(plan, indent=2)}") #DEBUG
+        plan = make_plan(user_text, history, GEM, memory=mem, current_plan=current_plan)
+        print(f"DEBUG - User input: {user_text}")
+        print(f"DEBUG - Generated plan: {json.dumps(plan, indent=2)}")
     except TypeError:
+        # Fallback for older signature
         plan = make_plan(user_text, history, GEM)
 
+    workflow_type = plan.get("workflow_type", "new")
+    print(f"DEBUG - Workflow type: {workflow_type}")
+
+    # CRITICAL FIX: Always use the new plan from the planner
+    # The planner has already decided what to do based on context
     state["plan"] = plan
+    state["step_index"] = 0  # Start from beginning of new plan
+    state["workflow_type"] = workflow_type
+
+    # Handle workflow type metadata for UI
+    if workflow_type == "modify":
+        modify_step = plan.get("modify_step")
+        if modify_step is not None:
+            # Backup original if not already backed up
+            if not state.get("original_plan"):
+                state["original_plan"] = deepcopy(current_plan)
+    elif workflow_type == "new":
+        # Clear any previous workflow state
+        state["original_plan"] = None
+
+    # Update trace for UI
     state["trace"] = {
+        "workflow_type": workflow_type,
         "thinking": plan.get("thinking", []),
         "steps":    plan.get("steps",    []),
         "explain":  plan.get("explain",  ""),
+        "modify_step": plan.get("modify_step") if workflow_type == "modify" else None,
     }
-    state["step_index"] = 0
+    
     state["results"] = state.get("results") or {}
     state["working"] = state.get("working") or {}
 
@@ -143,6 +205,7 @@ async def analyze(state: AssistantState) -> AssistantState:
         state.pop("pending_clarify", None)
 
     add_msg(state, "planner", "trace", state["trace"])
+    print(f"DEBUG - Final plan steps count: {len(state['plan'].get('steps', []))}")
     return state
 
 def route_from_analyze(state: AssistantState):

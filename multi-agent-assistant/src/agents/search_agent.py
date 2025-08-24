@@ -47,10 +47,24 @@ class SearchAgent(BaseAgent):
     ) -> None:
         mem = state.setdefault("memory", {})
         search_mem = mem.setdefault("search", {})
+        
+        # Current storage pattern (keep for backward compatibility)
         search_mem["last_results"] = compact_results
         search_mem["last_summary"] = (summary_text or "").strip()
-        step_assign = state.get("current_step", {}).get("assign", "search_results")
-        search_mem[step_assign] = {"summary": summary_text}
+        
+        # Store at the assign variable location if available
+        current_step = state.get("current_step", {})
+        assign_var = current_step.get("assign")
+        if assign_var:
+            search_mem[assign_var] = {
+                "summary": summary_text,
+                "items": compact_results
+            }
+        # Legacy location for backward compatibility
+        mem["last_search"] = {
+            "items": compact_results,
+            "summary": summary_text
+        }
 
     def _summarize_with_llm(self, results: List[Dict[str, Any]]) -> str:
         if not self.gemini or not results:
@@ -105,6 +119,22 @@ class SearchAgent(BaseAgent):
         payload.update(verify_response("search", payload))
         self.add_msg(state, "response", payload)
         return state
+    
+    def store_search_results_properly(state, summary_llm, compact, assign_var):
+        """Store search results in multiple locations for compatibility."""
+        mem = state.setdefault("memory", {})
+        search_mem = mem.setdefault("search", {})
+        
+        # Current storage pattern
+        search_mem["last_results"] = compact
+        search_mem["last_summary"] = summary_llm
+        
+        # Store at the assign variable location (what planner expects)
+        if assign_var and assign_var != "search_results":
+            search_mem[assign_var] = {"summary": summary_llm, "items": compact}
+        
+        # Also store in legacy location for backward compatibility
+        mem["last_search"] = {"items": compact, "summary": summary_llm}
 
     # ---------- main entry ----------
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:

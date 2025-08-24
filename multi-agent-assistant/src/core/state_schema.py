@@ -4,7 +4,7 @@ from typing import TypedDict, List, Dict, Any, Optional
 class AssistantState(TypedDict, total=False):
     # Input
     user_input: str
-    confirm: bool                          # set by UI when user types “send/confirm/yes”
+    confirm: bool                          # set by UI when user types "send/confirm/yes"
     confirm_context: Dict[str, Any]        # the exact step (agent/tool/args) to run on confirm
 
     # Conversation memory (rolling chat)
@@ -19,10 +19,15 @@ class AssistantState(TypedDict, total=False):
     # Planner + orchestration
     plan: Dict[str, Any]                   # {"steps":[...], "clarify":"...", "thinking":[...], "explain":"..."}
     trace: Dict[str, Any]                  # trimmed for UI (thinking, steps, explain)
-    step_index: int                        # which plan step we’re on
+    step_index: int                        # which plan step we're on
     results: Dict[str, Any]                # assign -> result
     working: Dict[str, Any]                # scratchpad
     pending_clarify: Optional[str]         # question to ask before proceeding
+
+    # ENHANCED: Workflow state management
+    workflow_type: Optional[str]           # "new"|"modify"|"continue"
+    original_plan: Optional[Dict[str, Any]] # backup of the original plan before modifications
+    pending_modifications: List[Dict[str, Any]] # queue of pending step modifications
 
     # Render helpers
     current_agent: str                     # for UI badge
