@@ -1,7 +1,6 @@
 from __future__ import annotations
 import re
 from typing import Dict, Any, List, Optional
-
 from .base_agent import BaseAgent
 from src.mcp_integration.mcp_client import MCPClient
 from src.intelligence.verifier import verify_response
@@ -9,8 +8,6 @@ from src.intelligence.verifier import verify_response
 EMAIL_RE = re.compile(r'[\w\.-]+@[\w\.-]+\.\w+')
 EMAIL_RE_FULL = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 READ_CMD_RE = re.compile(r"\b(read|open)\b\s*(?:email\s*)?(?:#\s*(\d+)|([A-Fa-f0-9]{10,}))", re.I)
-
-
 
 
 def _sanitize_filters(f: Dict[str, Any]) -> Dict[str, Any]:
@@ -263,7 +260,8 @@ class EmailAgent(BaseAgent):
             guidance = (args.get("instruction") or args.get("guidance") or state.get("user_input") or "").strip()
             if guidance:
                 body = (self.gemini.chat(
-                    "Write a concise, courteous email based on this instruction. "
+                    "Write a concise, courteous email based on this instruction. The format for the email must be:\n\n"
+                    "Hey there,\n\n*body*\n\nKind regards\n\n"
                     "Use plain language and keep it under 120 words.\n\nInstruction:\n" + guidance
                 ) or "").strip()
 

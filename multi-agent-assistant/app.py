@@ -1,7 +1,7 @@
 # app.py
 import os
 import asyncio
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 
 import streamlit as st
 from dotenv import load_dotenv, find_dotenv
@@ -25,7 +25,7 @@ if "gem" not in st.session_state:
     st.session_state["gem"] = None
 
 if "chat" not in st.session_state:
-    st.session_state["chat"] = []  # UI transcript (list of dicts)
+    st.session_state["chat"] = []  # conversation transcript
 
 if "agent_messages_state" not in st.session_state:
     st.session_state["agent_messages_state"] = []
@@ -33,19 +33,14 @@ if "agent_messages_state" not in st.session_state:
 if "llm_history" not in st.session_state:
     st.session_state["llm_history"] = []
 
-# Shared cross-agent memory
 if "memory" not in st.session_state:
     st.session_state["memory"] = {}
 
-# Store confirm_context between turns
 if "confirm_context" not in st.session_state:
     st.session_state["confirm_context"] = None
 
-if "last_user_input" not in st.session_state:
-    st.session_state["last_user_input"] = ""
-
 # -----------------------------
-# LLM getter
+# Helpers
 # -----------------------------
 def _get_gemini() -> Optional[GeminiClient]:
     key = os.getenv("GEMINI_API_KEY") or ""
@@ -59,12 +54,8 @@ def _get_gemini() -> Optional[GeminiClient]:
             return None
     return st.session_state["gem"]
 
-# -----------------------------
-# Async graph runner
-# -----------------------------
 def _run_graph_sync(state: Dict[str, Any]) -> Dict[str, Any]:
     wf = st.session_state["wf"]
-    # Streamlit runs in a clean thread; usually safe to asyncio.run
     try:
         return asyncio.run(wf.ainvoke(state))
     except RuntimeError:
@@ -74,9 +65,6 @@ def _run_graph_sync(state: Dict[str, Any]) -> Dict[str, Any]:
             return fut.result()
         return loop.run_until_complete(wf.ainvoke(state))
 
-# -----------------------------
-# Render helpers
-# -----------------------------
 def _md_link(url: str, text: Optional[str] = None) -> str:
     text = text or url
     return f"[{text}]({url})"
@@ -117,7 +105,15 @@ def render_emails(payload: Dict[str, Any]):
     if mode == "compose":
         d = payload.get("draft") or {}
         st.info("Draft ready. Reply 'send' to send, or reply with edits.")
-        st.markdown(f"**To:** {', '.join(d.get('to', [])) or '(none)'}")
+        
+        # Fix the TypeError here:
+        to_field = d.get('to', [])
+        if isinstance(to_field, str):
+            to_display = to_field
+        else:
+            to_display = ', '.join(to_field) if to_field else '(none)'
+            
+        st.markdown(f"**To:** {to_display}")
         st.markdown(f"**Subject:** {d.get('subject','(no subject)')}")
         with st.expander("Body", expanded=True):
             st.write((d.get("body","") or "")[:4000])
@@ -159,11 +155,6 @@ def render_calendar(payload: Dict[str, Any]):
             if loc:
                 st.markdown(f"**Location:** {loc}")
             st.code(ev.get("id",""), language="text")
-    confs = payload.get("conflicts") or []
-    if confs:
-        st.warning("Conflicts:")
-        for c in confs:
-            st.markdown(f"- **{c.get('a','')}** overlaps **{c.get('b','')}** ({c.get('range','')})")
 
 def render_generic(payload: Dict[str, Any]):
     if not payload:
@@ -175,10 +166,10 @@ def render_generic(payload: Dict[str, Any]):
         st.json(payload)
 
 def render_planner_trace(payload: Dict[str, Any]):
-    with st.expander("🧠 Reasoning trace (planner)", expanded=False):
-        explain = payload.get("explain") or ""
-        thinking = payload.get("thinking") or []
-        steps = payload.get("steps") or []
+    explain = payload.get("explain") or ""
+    thinking = payload.get("thinking") or []
+    steps = payload.get("steps") or []
+    with st.expander("🧠 Reasoning trace (planner)", expanded=True):
         if explain:
             st.markdown(f"**Plan:** {explain}")
         if thinking:
@@ -197,7 +188,6 @@ def render_planner_trace(payload: Dict[str, Any]):
 # One turn
 # -----------------------------
 def run_turn(user_text: str, *, confirm: bool = False, confirm_context: Optional[Dict[str, Any]] = None):
-    # Build state for graph
     state = {
         "user_input": user_text,
         "agent_messages": st.session_state["agent_messages_state"],
@@ -208,29 +198,35 @@ def run_turn(user_text: str, *, confirm: bool = False, confirm_context: Optional
     if confirm_context:
         state["confirm_context"] = confirm_context
 
-    # Run graph
     out = _run_graph_sync(state)
 
-    # Pull state back
+    # Persist
     st.session_state["agent_messages_state"] = out.get("agent_messages", [])
     st.session_state["llm_history"] = out.get("history", st.session_state["llm_history"])
     st.session_state["memory"] = out.get("memory", st.session_state["memory"])
 
-    # If a confirmation payload appeared, cache its context for typed “send”
+    # Cache confirm_context if present
     for msg in reversed(out.get("agent_messages", [])):
         p = msg.get("payload") or {}
-        if p.get("requires_confirmation") and p.get("proposal"):
-            st.session_state["confirm_context"] = p.get("proposal")
+        if p.get("requires_confirmation") and (p.get("proposal") or p.get("confirm_context")):
+            st.session_state["confirm_context"] = p.get("proposal") or p.get("confirm_context")
             break
 
-    # Render the last few messages of this turn
+    # Always show the most recent planner trace first on the turn
+    trace = out.get("trace")
+    if trace:
+        with st.chat_message("assistant", avatar="🤖"):
+            render_planner_trace(trace)
+
+    # Then render the last few messages generated this turn
     new_msgs = out.get("agent_messages", [])
-    for m in new_msgs[-3:]:
+    for m in new_msgs[-4:]:
         sender = m.get("sender"); mtype = m.get("message_type"); payload = m.get("payload") or {}
         with st.chat_message("assistant", avatar="🤖"):
             if sender == "planner" and mtype == "trace":
-                render_planner_trace(payload)
-            elif payload.get("requires_confirmation") and payload.get("proposal"):
+                # Already rendered above as the turn’s trace
+                continue
+            if payload.get("requires_confirmation") and (payload.get("proposal") or payload.get("confirm_context")):
                 st.info(payload.get("message") or "Confirm?")
                 st.caption("Reply with **send** to proceed, or provide edits/cancel.")
             elif sender == "search" and mtype == "response":
@@ -241,13 +237,13 @@ def run_turn(user_text: str, *, confirm: bool = False, confirm_context: Optional
                 st.subheader("📅 Calendar"); render_calendar(payload)
             elif sender == "coordinator" and mtype == "error":
                 st.error(payload.get("message") or "Unexpected error.")
-                raw = payload.get("raw"); 
+                raw = payload.get("raw")
                 if raw: 
                     with st.expander("Details"): st.code(str(raw))
             else:
                 render_generic(payload)
 
-    # Keep transcript fresh
+    # Keep transcript
     if new_msgs:
         st.session_state["chat"].append({"role": "assistant", "content": new_msgs[-1].get("payload", {})})
 
@@ -280,19 +276,20 @@ with st.sidebar:
                 st.write(gem.chat("Say 'hello' in one short sentence."))
     st.divider()
     st.markdown("**Notes**")
-    st.markdown("- Mutating actions (send email, create/update/delete events) use typed confirmation: reply **send**.")
-    st.markdown("- Timezone assumed: **Africa/Johannesburg**.")
-    st.markdown("- Planner drives routing, tools, and synthesis (Gemini-first).")
+    st.markdown("- Mutating actions use typed confirmation: reply **send**.")
+    st.markdown("- Planner trace is shown every turn.")
+    st.markdown("- Cross-agent memory lets me chain steps (e.g., search → email).")
 
 # -----------------------------
 # Main page
 # -----------------------------
 st.title("Personal AI Assistant")
 
-# Show conversation history
+# Show entire chat history
 for msg in st.session_state["chat"]:
     if msg["role"] == "user":
-        with st.chat_message("user"): st.write(msg["content"])
+        with st.chat_message("user"):
+            st.write(msg["content"])
     else:
         with st.chat_message("assistant", avatar="🤖"):
             content = msg["content"]
@@ -306,14 +303,12 @@ for msg in st.session_state["chat"]:
             else:
                 st.write(str(content))
 
-# Chat input (typed confirm supported)
+# Chat input with typed confirm
 user_text = st.chat_input("Ask me to check email, manage calendar, or search the web…")
 if user_text:
-    # append user message to transcript immediately
     with st.chat_message("user"): st.write(user_text)
     st.session_state["chat"].append({"role": "user", "content": user_text})
 
-    # Detect typed confirmation phrases
     confirm_phrases = {"send", "send it", "confirm", "yes", "yes, send"}
     lower = user_text.strip().lower()
     is_confirm = lower in confirm_phrases
@@ -324,7 +319,6 @@ if user_text:
             confirm=True,
             confirm_context=st.session_state["confirm_context"]
         )
-        # clear after use
         st.session_state["confirm_context"] = None
     else:
         run_turn(user_text, confirm=False)

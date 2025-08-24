@@ -49,6 +49,8 @@ class SearchAgent(BaseAgent):
         search_mem = mem.setdefault("search", {})
         search_mem["last_results"] = compact_results
         search_mem["last_summary"] = (summary_text or "").strip()
+        step_assign = state.get("current_step", {}).get("assign", "search_results")
+        search_mem[step_assign] = {"summary": summary_text}
 
     def _summarize_with_llm(self, results: List[Dict[str, Any]]) -> str:
         if not self.gemini or not results:
@@ -80,6 +82,10 @@ class SearchAgent(BaseAgent):
 
         # persist into shared memory for chaining
         self._remember(state, summary_llm, compact)
+        # Also store where planner expects it
+        mem = state.setdefault("memory", {})
+        search_mem = mem.setdefault("search", {})
+        search_mem["langgraph_info"] = {"summary": summary_llm}
 
         # payload for UI
         payload: Dict[str, Any] = {
