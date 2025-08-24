@@ -1,5 +1,5 @@
 # src/intelligence/planner.py
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from src.utils.gemini_client import GeminiClient
 
 _SCHEMA = r"""
@@ -21,16 +21,20 @@ Return ONLY JSON with this exact shape (no markdown fences):
   "explain": "1-2 sentence natural explanation of your plan"
 }
 
-Rules:
-- Output must be valid JSON only. Do not include commentary, code fences, or extra keys.
-- Prefer a single, minimal step for read-only actions (email list/read, calendar list, web search).
-- For mutating actions (send email, create/update/delete calendar event) ALWAYS set confirm=true.
-- If any required slot is missing:
-  - For email sending: missing recipient/subject/body -> set clarify, steps=[]
-  - For calendar create/update/delete: missing time(s), title, or event_id -> set clarify, steps=[]
-- Calendar listing should use a natural window in args (e.g. {"window":"today"} or {"window":"tomorrow"}), not raw ISO times.
-- Calendar creation should use start_local / end_local (e.g., "tomorrow 20:00") for the executor/agent to normalize.
-- When useful, set assign to store outputs for possible chaining later.
+"rules": [
+"Output must be valid JSON only. Do not include commentary, code fences, or extra keys.",
+"Prefer a single, minimal step for read-only actions (email list/read, calendar list, web search).",
+"For mutating actions (send email, create/update/delete calendar event) ALWAYS set confirm=true.",
+"Exception: If the user explicitly says 'send' or 'send it', treat that as explicit confirmation and you may set confirm=false for the send step.",
+"If any required slot is missing: for email sending, if recipient/subject/body are missing -> set clarify and steps=[]; for calendar create/update/delete, if title, time(s), or event_id are missing -> set clarify and steps=[].",
+"Calendar listing should use a natural window in args (e.g., {"window":"today"} or {"window":"tomorrow"}), not raw ISO times.",
+"Calendar creation should use start_local / end_local strings (e.g., "tomorrow 20:00") for the executor/agent to normalize.",
+"Email drafting must be non-mutating: use agent="email", tool="none" with args {to,subject,body} to create a draft; do not send in the same turn.",
+"Sending an email should reference the pending draft in memory: use agent="email", tool="none", args {"action":"send"}.",
+"When useful, set assign to store outputs for possible chaining later (e.g., assign search results, email list).",
+"Support pulling content from memory into drafts via args {"body_from_memory":"search.last_summary"} or similar memory paths.",
+"For "read email number N", prefer a single read-only step that uses args.index to resolve by last listed set.",
+"Keep plans minimal (<= 5 steps), safe, and conversational. Ask exactly one concise clarification question when required."
 """
 
 _FEWSHOTS = r"""
@@ -126,7 +130,113 @@ User: search gemini api docs
   ],
   "thinking":["Read-only web search"],
   "explain":"I'll search the web and summarize the key docs."
+
+User: please write an email for me
+{
+  "steps": [],
+  "clarify": "Who should I send it to, and what should the subject and body say?",
+  "thinking": ["Recipient, subject, and body are missing"],
+  "explain": "I need the recipient and a brief idea of the subject and message before I draft it."
 }
+
+User: send it
+{
+  "steps": [
+  {
+      "agent": "email",
+      "tool": "none",
+      "args": { "action": "send" },
+      "assign": "sent",
+      "confirm": false,
+      "instruction": "Send the last pending draft from memory."
+    }
+  ],
+  "thinking": ["User explicitly said 'send' which counts as confirmation", "Send the pending draft from memory"],
+  "explain": "I'll send your last draft now."
+
+User: please check what impact.com is all about
+{
+  "steps": [
+  {
+      "agent": "search",
+      "tool": "web_search",
+      "args": { "query": "impact.com overview what is impact.com", "count": 5 },
+      "assign": "impact_overview",
+      "confirm": false,
+      "instruction": "Find a concise overview of impact.com."
+    }
+  ],
+  "thinking": ["Search then summarize", "Store a short summary in memory for follow-up tasks"],
+  "explain": "I'll search for a quick overview.
+
+User: please check what impact.com is all about
+{
+  "steps": [
+  {
+      "agent": "search",
+      "tool": "web_search",
+      "args": { "query": "impact.com overview what is impact.com", "count": 5 },
+      "assign": "impact_overview",
+      "confirm": false,
+      "instruction": "Find a concise overview of impact.com."
+    }
+  ],
+  "thinking": ["Search then summarize", "Store a short summary in memory for follow-up tasks"],
+  "explain": "I'll search for a quick overview."
+
+User: copy that information and email it to zainforbes@gmail.com
+{
+  "steps": [
+  {
+      "agent": "email",
+      "tool": "none",
+      "args": {
+      "to": "zainforbes@gmail.com
+      ",
+      "subject": "Quick summary: impact.com",
+      "body_from_memory": "search.last_summary"}<
+      "assign": "draft1",
+      "confirm": false,
+      "instruction": "Create a draft using the last search summary; do not send yet."
+    }
+  ],
+  "thinking": ["Use previous search summary from memory", "Draft first so the user can review"],
+  "explain": "I’ll draft the email using the last summary and show it to you." 
+
+User: reschedule event abc123 to tomorrow 15:00-16:00
+{
+  "steps": [
+  {
+      "agent": "calendar",
+      "tool": "gcal_update_event",
+      "args": {
+      "event_id": "abc123",
+      "start_local": "tomorrow 15:00",
+      "end_local": "tomorrow 16:00"
+      },
+      "assign": "evt_update",
+      "confirm": true,
+      "instruction": "Update the event time after the user confirms."
+    }
+  ],
+  "thinking": ["Mutating calendar action requires confirmation"],
+  "explain": "I’ll reschedule the event after you confirm." 
+
+User: reschedule event abc123 to tomorrow 15:00-16:00
+{
+  "steps": [
+  {
+      "agent": "calendar",
+      "tool": "gcal_delete_event",
+      "args": { "event_id": "abc123" },
+      "assign": "del1",
+      "confirm": true,
+      "instruction": "Delete the event after the user confirms."
+    }
+  ],
+  "thinking": ["Destructive action requires confirmation"],
+  "explain": "I’ll delete the event after you confirm."
+
 """
 
 _SYS = f"""
@@ -160,27 +270,23 @@ Examples (for style, JSON ONLY):
 {_FEWSHOTS}
 """
 
-def make_plan(user_text: str, history: List[Dict[str, str]], gemini: GeminiClient) -> Dict[str, Any]:
-    # build lightweight context window for the planner (last ~20 messages)
-    ctx = "\n".join(f"{h['role'].capitalize()}: {h['content']}" for h in history[-20:] if h.get("role") and h.get("content"))
-    prompt = f"{_SYS}\n\nConversation so far:\n{ctx or '(none)'}\n\nUser: {user_text}\n\nReturn JSON now."
+def make_plan(
+    user_text: str,
+    history: List[Dict[str,str]],
+    gemini: GeminiClient,
+    memory: Optional[Dict[str, Any]] = None
+) -> Dict[str,Any]:
+    ctx = "\n".join(f"{h['role'].capitalize()}: {h['content']}" for h in history[-20:])
+    mem_json = memory or {}
+    prompt = (
+        f"{_SYS}\n\nRecent context:\n{ctx or '(none)'}"
+        f"\n\nWorking memory (JSON):\n{mem_json}"
+        f"\n\nUser: {user_text}\n\nReturn JSON now."
+    )
     obj = gemini.chat_json_obj(prompt) or {}
-
-    # defensive normalization
-    if not isinstance(obj, dict):
-        obj = {}
     obj.setdefault("steps", [])
     obj.setdefault("thinking", [])
     obj.setdefault("explain", "")
-
-    # Keep signal tight
-    if not obj.get("clarify"):
-        obj.pop("clarify", None)
-
-    # Cap steps for safety
-    if isinstance(obj.get("steps"), list):
-        obj["steps"] = obj["steps"][:5]
-    else:
-        obj["steps"] = []
-
+    if not obj.get("clarify"): obj.pop("clarify", None)
+    obj["steps"] = obj["steps"][:5]
     return obj
