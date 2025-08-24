@@ -1,4 +1,3 @@
-# src/intelligence/synthesizer.py
 from typing import Dict, Any, List
 from src.utils.gemini_client import GeminiClient
 
@@ -69,3 +68,5 @@ def final_summarize(
         "Write the final assistant reply."
     )
     return gemini.chat(prompt)
+
+

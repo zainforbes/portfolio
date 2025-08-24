@@ -290,6 +290,68 @@ async def finalize(state: AssistantState) -> AssistantState:
 
     return state
 
+def synthesize_node(state: AssistantState) -> AssistantState:
+    """
+    Produce a natural final line, but NEVER claim a send unless payload says so.
+    """
+    msgs = state.get("agent_messages") or []
+    if not msgs:
+        return state
+
+    last = msgs[-1]
+    sender = last.get("sender")
+    payload = last.get("payload") or {}
+
+    line = ""
+
+    if sender == "email":
+        mode = (payload or {}).get("mode")
+        if mode == "compose":
+            d = payload.get("draft") or {}
+            to = ", ".join(d.get("to", [])) or "recipient"
+            subj = d.get("subject", "(no subject)")
+            line = f"Draft ready to {to} — “{subj}”. Reply **send** to send, or tell me edits."
+        elif mode == "sent":
+            to = ", ".join(payload.get("sent_to", [])) or "recipient"
+            subj = payload.get("subject", "(no subject)")
+            line = f"✅ Email sent to {to} — “{subj}”. Anything else?"
+        elif mode == "read":
+            subj = ((payload.get("email") or {}).get("subject") or "(no subject)")
+            line = f"Opened that email: “{subj}”. Want me to reply or do anything else?"
+        else:
+            # list mode or other
+            cnt = payload.get("count")
+            if isinstance(cnt, int):
+                line = f"Here are your {cnt} recent emails. Say 'read #2' to open one."
+            else:
+                line = "Here are the email results."
+
+    elif sender == "calendar":
+        w = (payload.get("window") or {}).get("label")
+        if w:
+            line = f"Calendar for {w} shown above."
+        elif payload.get("event"):
+            line = "Calendar update completed."
+        else:
+            line = "Calendar results updated."
+
+    elif sender == "search":
+        if payload.get("summary_llm"):
+            line = "I’ve summarized the top results above."
+        else:
+            line = "Here are the top web results."
+
+    elif sender == "default":
+        line = (payload.get("result") or "").strip()
+
+    if line:
+        state["agent_messages"].append({
+            "sender": "coordinator",
+            "message_type": "response",
+            "payload": {"result": line}
+        })
+    return state
+
 
 # ---------- Build the graph ----------
 def build_workflow():

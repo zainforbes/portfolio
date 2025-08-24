@@ -1,6 +1,9 @@
 # src/intelligence/planner.py
-from typing import Dict, Any, List, Optional
+from __future__ import annotations
+import re
+from typing import Dict, Any, List
 from src.utils.gemini_client import GeminiClient
+
 
 _SCHEMA = r"""
 Return ONLY JSON with this exact shape (no markdown fences):
@@ -270,23 +273,50 @@ Examples (for style, JSON ONLY):
 {_FEWSHOTS}
 """
 
-def make_plan(
-    user_text: str,
-    history: List[Dict[str,str]],
-    gemini: GeminiClient,
-    memory: Optional[Dict[str, Any]] = None
-) -> Dict[str,Any]:
+SEND_RE = re.compile(r"\b(send( it)?|fire it off|go ahead)\b", re.I)
+PUT_IN_EMAIL_RE = re.compile(r"(put|copy|drop)\s+(that|this|the (info|information|summary|result))\s+into an email\s+(to|for)\s+([^\s,;]+)", re.I)
+
+def make_plan(user_text: str, history: List[Dict[str,str]], gemini: GeminiClient) -> Dict[str,Any]:
     ctx = "\n".join(f"{h['role'].capitalize()}: {h['content']}" for h in history[-20:])
-    mem_json = memory or {}
-    prompt = (
-        f"{_SYS}\n\nRecent context:\n{ctx or '(none)'}"
-        f"\n\nWorking memory (JSON):\n{mem_json}"
-        f"\n\nUser: {user_text}\n\nReturn JSON now."
-    )
+    prompt = f"{_SYS}\n\nRecent context:\n{ctx or '(none)'}\n\nUser: {user_text}\n\nReturn JSON now."
     obj = gemini.chat_json_obj(prompt) or {}
     obj.setdefault("steps", [])
     obj.setdefault("thinking", [])
     obj.setdefault("explain", "")
-    if not obj.get("clarify"): obj.pop("clarify", None)
+
+    # Heuristic post-processing (safety nets)
+    text = (user_text or "").strip()
+
+    # A) "send" / "send it" – let the agent send the last draft from memory
+    if not obj["steps"] and SEND_RE.search(text):
+        obj["steps"] = [{
+            "agent": "email",
+            "tool": "gmail_send",
+            "args": {},
+            "assign": "sent_auto",
+            "confirm": False,
+            "instruction": "Send the most recent draft stored in memory."
+        }]
+
+    # B) "put that into an email to X" – compose draft using last web summary
+    if not obj["steps"]:
+        m = PUT_IN_EMAIL_RE.search(text)
+        if m:
+            to_addr = m.group(5)
+            obj["steps"] = [{
+                "agent": "email",
+                "tool": "none",
+                "args": {
+                    "to": to_addr,
+                    "subject": "Quick summary",
+                    "body_from_memory": "search.last_summary"
+                },
+                "assign": "draft_from_search",
+                "confirm": False,
+                "instruction": "Compose a draft from the last web search summary; do not send."
+            }]
+
+    if not obj.get("clarify"):
+        obj.pop("clarify", None)
     obj["steps"] = obj["steps"][:5]
     return obj

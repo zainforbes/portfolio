@@ -103,22 +103,32 @@ class SearchAgent(BaseAgent):
 
     # ---------- main entry ----------
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Planner-aware:
-          - if step.tool == "web_search": perform search with args
-        Fallback:
-          - treat user's utterance as the query and search
-        """
+        q = (state.get("user_input") or "").strip()
         step = state.get("current_step") or {}
-        tool = (step.get("tool") or "").strip().lower()
-        args = (step.get("args") or {}).copy()
-        args["_state"] = state
+        tool_args = (step.get("args") or {})
+        if tool_args.get("query"):
+            q = tool_args["query"]
+        count = int(tool_args.get("count") or 5)
 
-        # planner path
-        if tool == "web_search":
-            return await self._plan_search(args)
+        results: List[Dict[str, Any]] = await self.mcp.call_tool("web_search", query=q, count=count)
+        payload: Dict[str, Any] = {"query": q, "items": results}
 
-        # fallback path: search user's text directly
-        if state.get("user_input"):
-            args.setdefault("query", state["user_input"])
-        return await self._plan_search(args)
+        summary = ""
+        if self.gemini:
+            bullets = "\n".join(
+                f"- {r.get('title','')} ({r.get('url','')}) — {r.get('snippet','')}" for r in results[:5]
+            )
+            prompt = (
+                "Summarize these results in 2–4 crisp bullets that answer the user’s intent. "
+                "Avoid filler. Keep it scannable.\n" + bullets
+            )
+            summary = (self.gemini.chat(prompt) or "").strip()
+            payload["summary_llm"] = summary
+
+        # Persist into conversational memory for chaining (email compose, etc.)
+        mem = state.setdefault("memory", {})
+        sm = mem.setdefault("search", {})
+        sm["last_summary"] = summary or ("; ".join(r.get("snippet","") for r in results[:3])[:400])
+
+        self.add_msg(state, "response", payload)
+        return state
