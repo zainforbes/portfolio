@@ -11,6 +11,8 @@ EMAIL_RE_FULL = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 READ_CMD_RE = re.compile(r"\b(read|open)\b\s*(?:email\s*)?(?:#\s*(\d+)|([A-Fa-f0-9]{10,}))", re.I)
 
 
+
+
 def _sanitize_filters(f: Dict[str, Any]) -> Dict[str, Any]:
     f = {**f}
     s = (f.get("sender") or "").strip()
@@ -153,16 +155,10 @@ class EmailAgent(BaseAgent):
         state = args["_state"]
         q = (args.get("query") or "").strip()
         max_results = int(args.get("max_results") or 10)
-
         emails = await self.mcp.call_tool("gmail_list_recent", query=q or None, max_results=max_results)
+
         compact = _build_compact(emails)
         index_map = {str(c["idx"]): c["id"] for c in compact}
-
-        # remember last list
-        mem = _mem_email(state)
-        mem["last_query"] = q
-        mem["last_compact"] = compact
-        mem["last_index_map"] = index_map
 
         payload: Dict[str, Any] = {
             "mode": "list",
@@ -177,6 +173,11 @@ class EmailAgent(BaseAgent):
                 "read <paste-message-id>",
                 "show unread emails from the last 7 days",
             ],
+            # Optional memory patch (workflow also stores it)
+            "memory_patch": {
+                "last_email_list": {"list": compact, "index_map": {int(k): v for k, v in index_map.items()}, "query": q},
+                "last_email_index_map": {int(k): v for k, v in index_map.items()},
+            }
         }
 
         if self.gemini and compact:
@@ -200,34 +201,24 @@ class EmailAgent(BaseAgent):
         index = args.get("index")
         msg_id = args.get("id")
 
-        # allow index resolution via last list; if missing, auto-list first
+        # allow reading by index via memory
         if index is not None and not msg_id:
             try:
                 idx = int(index)
             except Exception:
                 idx = None
-
-            imap = _latest_email_index_map(state.get("agent_messages") or [])
-            if not imap and idx is not None:
-                # do a fresh list to build mapping
-                fallback_q = (_mem_email(state).get("last_query") or "")  # reuse last query if available
-                await self._plan_list({"query": fallback_q, "max_results": 10, "_state": state})
-                imap = _latest_email_index_map(state.get("agent_messages") or [])
-
             if idx is not None:
+                imap = (state.get("memory") or {}).get("last_email_index_map", {})
                 msg_id = imap.get(idx)
 
         if not msg_id:
-            self.add_msg(state, "response", {"result": "I couldn't resolve that email. Try 'read email #2' after listing."})
+            self.add_msg(state, "response", {"result": "I couldn't resolve that email. Try 'read email #2'."})
             return state
 
         detail = await self.mcp.call_tool("gmail_read", message_id=str(msg_id))
-        payload = {
-            "mode": "read",
-            "message_id": str(msg_id),
-            "email": detail,
-        }
-
+        payload = {"mode": "read", "message_id": str(msg_id), "email": detail}
+        payload.update(verify_response("email", payload))
+    
         # optional LLM skim (kept light)
         if self.gemini:
             subj = detail.get("subject","(no subject)")
@@ -240,7 +231,8 @@ class EmailAgent(BaseAgent):
             )
             payload["summary_llm"] = self.gemini.chat(prompt)
 
-        payload.update(verify_response("email", payload))
+        # memory hint
+        payload["memory_patch"] = {"last_email_read": {"email": detail}}
         self.add_msg(state, "response", payload)
         return state
 
@@ -310,43 +302,47 @@ class EmailAgent(BaseAgent):
 
     # ---------- planner-aware: SEND (uses args or last draft in memory) ----------
     async def _plan_send(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Send immediately (no buttons). If args missing fields, uses memory.email.last_draft.
-        """
         state = args["_state"]
-        mem = _mem_email(state)
-        last_draft = mem.get("last_draft") or {}
+        mem   = state.get("memory", {})
+        to = args.get("to") or []
+        subject = (args.get("subject") or "").strip()
+        body = (args.get("body") or "").strip()
+        if isinstance(to, str):
+            to = [to]
 
-        to_raw = args.get("to") or last_draft.get("to") or []
-        to = [to_raw] if isinstance(to_raw, str) else list(to_raw)
-        subject = (args.get("subject") or last_draft.get("subject") or "").strip()
-        body = (args.get("body") or last_draft.get("body") or "").strip()
+        # Autocomplete from memory when missing
+        if not body:
+            ls = mem.get("last_search") or {}
+            if ls.get("items"):
+                items = ls["items"]
+                top = "\n".join(f"- {it.get('title','')} — {it.get('url','')}" for it in items[:5])
+                body = (ls.get("summary") or "Here’s what I found:") + "\n\n" + top
+            elif mem.get("last_email_read", {}).get("email"):
+                em = mem["last_email_read"]["email"]
+                quoted = (em.get("body","") or em.get("snippet","") or "")[:2000]
+                body = f"FYI, see below:\n\n---\nFrom: {em.get('from','')}\nSubject: {em.get('subject','')}\n\n{quoted}"
+        if not subject:
+            if mem.get("last_search"): subject = "Summary of recent findings"
+            elif mem.get("last_email_read"): subject = "Forwarded update"
+            else: subject = "(no subject)"
 
-        # allow body_from_memory at send time too
-        bf = (args.get("body_from_memory") or "").strip()
-        if bf and not body:
-            body = _get_from_memory(state, bf).strip()
+        draft = {"to": to, "subject": subject, "body": body}
 
-        if not to or not body:
-            self.add_msg(state, "response", {"result": "Missing recipient or body. Say 'compose an email to ...' first."})
+        # Require typed confirmation (the graph will pass confirm_context down)
+        if not state.get("confirm"):
+            self.add_msg(state, "response", {
+                "requires_confirmation": True,
+                "message": "Ready to send this email. Reply 'send' to proceed or edit details.",
+                "mode": "compose",
+                "draft": draft,
+                "agent": "email",
+                "intent": "email.send",
+                "confirm_context": {"agent": "email", "tool":"gmail_send", "args": draft},
+            })
             return state
 
-        res = await self.mcp.call_tool("gmail_send", to=to, subject=subject or "(no subject)", body=body)
-        payload: Dict[str, Any] = {
-            "mode": "sent",
-            "result": "Email sent.",
-            "send_result": res,
-            "sent_to": to,
-            "subject": subject or "(no subject)",
-        }
-        if self.gemini:
-            payload["summary_llm"] = self.gemini.chat(
-                f"Confirm to the user that the email to {', '.join(to)} with subject “{subject or '(no subject)'}” was sent."
-            )
-
-        # clear last draft to avoid accidental re-sends
-        mem["last_draft"] = None
-
+        res = await self.mcp.call_tool("gmail_send", **draft)
+        payload: Dict[str, Any] = {"mode":"sent", "result":"Email sent.", "sent_to": to, "subject": subject, "server_result": res}
         payload.update(verify_response("email", payload))
         self.add_msg(state, "response", payload)
         return state
@@ -369,40 +365,27 @@ class EmailAgent(BaseAgent):
 
     # ---------- main entry ----------
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Planner-aware paths:
-          - tool == "gmail_list_recent" -> list
-          - tool == "gmail_read"        -> read
-          - tool == "gmail_send"        -> send (uses args or last draft)
-          - tool == "none" + compose args -> compose-only (draft)
-        NL fallbacks:
-          - "read #N" or "open #N"
-          - else list according to parsed filters
-        """
         step = state.get("current_step") or {}
-        tool = (step.get("tool") or "").strip().lower()
+        tool = (step.get("tool") or "").strip()
         args = (step.get("args") or {}).copy()
         args["_state"] = state
 
-        # planner routes
         if tool == "gmail_list_recent":
             return await self._plan_list(args)
         if tool == "gmail_read":
             return await self._plan_read(args)
         if tool == "gmail_send":
             return await self._plan_send(args)
-        if tool == "none":
-            # treat presence of compose fields as a compose request
-            if any(k in args for k in ("to", "subject", "body", "body_from_memory", "instruction", "guidance")):
-                return await self._plan_compose(args)
 
-        # NL fallbacks
+        # NL fallback: read #N or list
         text = state.get("user_input","")
         m = READ_CMD_RE.search(text)
         if m:
-            num = m.group(2)
-            mid = m.group(3)
-            target = num or mid
-            return await self._read_mode(state, target)
+            target = m.group(2) or m.group(3)
+            if target and target.isdigit():
+                return await self._plan_read({"index": int(target), "_state": state})
+            elif target:
+                return await self._plan_read({"id": target, "_state": state})
 
-        return await self._list_mode(state)
+        # default list
+        return await self._plan_list({"_state": state, "query": None, "max_results": 10})

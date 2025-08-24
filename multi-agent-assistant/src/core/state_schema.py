@@ -4,24 +4,28 @@ from typing import TypedDict, List, Dict, Any, Optional
 class AssistantState(TypedDict, total=False):
     # Input
     user_input: str
-    confirm: bool  # set by UI for mutating steps
+    confirm: bool                          # set by UI when user types “send/confirm/yes”
+    confirm_context: Dict[str, Any]        # the exact step (agent/tool/args) to run on confirm
 
-    # Conversation memory (rolling)
-    history: List[Dict[str, str]]  # [{"role":"user|assistant","content":str}, ...]
+    # Conversation memory (rolling chat)
+    history: List[Dict[str, str]]          # [{"role":"user|assistant","content":str}, ...]
 
-    # UI timeline (you already use this)
-    agent_messages: List[Dict[str, Any]]
+    # Shared cross-agent memory (blackboard)
+    memory: Dict[str, Any]                 # {"last_search":{...}, "last_email_list":{...}, ...}
 
-    # Planner output and orchestration
-    plan: Dict[str, Any]           # {"steps":[...], "clarify":"...", "thinking":[...], "explain":"..."}
-    trace: Dict[str, Any]          # trimmed for UI (thinking, steps, explain)
-    step_index: int                # which plan step we’re on
-    results: Dict[str, Any]        # assign/result map
-    working: Dict[str, Any]        # scratch “blackboard”
-    pending_clarify: Optional[str] # question the planner wants to ask
+    # UI timeline / messages
+    agent_messages: List[Dict[str, Any]]   # each: {"sender","message_type","payload",...}
+
+    # Planner + orchestration
+    plan: Dict[str, Any]                   # {"steps":[...], "clarify":"...", "thinking":[...], "explain":"..."}
+    trace: Dict[str, Any]                  # trimmed for UI (thinking, steps, explain)
+    step_index: int                        # which plan step we’re on
+    results: Dict[str, Any]                # assign -> result
+    working: Dict[str, Any]                # scratchpad
+    pending_clarify: Optional[str]         # question to ask before proceeding
 
     # Render helpers
-    current_agent: str             # for UI badge
-    micro_reply: Optional[str]     # mini-synthesis after each step
-    ask_followup: Optional[str]    # micro question that pauses the run
-    await_user: bool               # node to pause until user responds
+    current_agent: str                     # for UI badge
+    micro_reply: Optional[str]             # short synthesis after a step
+    ask_followup: Optional[str]            # micro question to pause run
+    await_user: bool                       # used by graph to pause
