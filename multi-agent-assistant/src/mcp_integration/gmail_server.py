@@ -7,11 +7,11 @@ from email.mime.text import MIMEText
 from email.utils import formataddr
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from src.utils.google_auth import get_credentials, GMAIL_SCOPES_RO, GMAIL_SCOPES_RW
+from src.utils.google_auth import get_credentials, GMAIL_SCOPES
 
 # ---- READ ----
 async def list_recent_emails(query: Optional[str] = None, max_results: int = 10) -> List[Dict]:
-    creds = get_credentials(GMAIL_SCOPES_RO)
+    creds = get_credentials(GMAIL_SCOPES)
     service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
     try:
         mlist = await asyncio.to_thread(service.users().messages().list,
@@ -35,7 +35,7 @@ async def list_recent_emails(query: Optional[str] = None, max_results: int = 10)
         raise RuntimeError(str(e)) from e
 
 async def read_email(message_id: str) -> Dict:
-    creds = get_credentials(GMAIL_SCOPES_RO)
+    creds = get_credentials(GMAIL_SCOPES)
     service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
     req = service.users().messages().get(userId="me", id=message_id, format="full")
     m = await asyncio.to_thread(req.execute)
@@ -52,7 +52,7 @@ def _build_raw(from_name: Optional[str], to: List[str], subject: str, body: str,
     return base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
 async def create_draft(to: List[str], subject: str, body: str, cc: List[str] | None = None, bcc: List[str] | None = None) -> Dict:
-    creds = get_credentials(GMAIL_SCOPES_RW)
+    creds = get_credentials(GMAIL_SCOPES)
     service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
     raw = _build_raw(None, to, subject, body, cc, bcc)
     draft = {"message": {"raw": raw}}
@@ -60,7 +60,7 @@ async def create_draft(to: List[str], subject: str, body: str, cc: List[str] | N
     return await asyncio.to_thread(req.execute)
 
 async def send_email(to: List[str], subject: str, body: str, cc: List[str] | None = None, bcc: List[str] | None = None) -> Dict:
-    creds = get_credentials(GMAIL_SCOPES_RW)
+    creds = get_credentials(GMAIL_SCOPES)
     service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
     raw = _build_raw(None, to, subject, body, cc, bcc)
     req = service.users().messages().send(userId="me", body={"raw": raw})
@@ -68,7 +68,7 @@ async def send_email(to: List[str], subject: str, body: str, cc: List[str] | Non
 
 async def send_email(to: str, subject: str, body: str) -> Dict[str, Any]:
     """Send an email via Gmail API."""
-    creds = get_credentials(GMAIL_SCOPES_RW)  # ensure scope includes gmail.send
+    creds = get_credentials(GMAIL_SCOPES)  # ensure scope includes gmail.send
     service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
 
     msg = EmailMessage()
@@ -83,7 +83,7 @@ async def send_email(to: str, subject: str, body: str) -> Dict[str, Any]:
 
 async def mark_read(ids: List[str]) -> Dict[str, Any]:
     """Batch remove UNREAD label."""
-    creds = get_credentials(GMAIL_SCOPES_RW)
+    creds = get_credentials(GMAIL_SCOPES)
     service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
     req = service.users().messages().batchModify(
         userId="me",
