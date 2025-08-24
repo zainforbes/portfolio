@@ -1,66 +1,44 @@
 # src/utils/gemini_client.py
-import os
-import time
-from typing import Optional, List
-
+import os, json
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+load_dotenv()
+
+def _strip_fences(s: str) -> str:
+    if not s: return s
+    s = s.strip()
+    if s.startswith("```"): s = "\n".join(s.splitlines()[1:])
+    if s.endswith("```"):   s = "\n".join(s.splitlines()[:-1])
+    return s.strip()
 
 class GeminiClient:
-    def __init__(self, model: str = DEFAULT_MODEL, max_retries: int = 2):
-        # Load .env so GEMINI_API_KEY is available
-        load_dotenv()
+    def __init__(self):
+        key = os.getenv("GEMINI_API_KEY")
+        if not key:
+            raise RuntimeError("GEMINI_API_KEY missing")
+        genai.configure(api_key=key)
+        self.model = genai.GenerativeModel("gemini-2.5-flash-lite")
+        self.model_json = genai.GenerativeModel(
+            "gemini-2.5-flash-lite",
+            generation_config={"response_mime_type": "application/json"}
+        )
 
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "GEMINI_API_KEY is not set. Create a .env with GEMINI_API_KEY=... "
-                "or set it in your environment."
-            )
+    def chat(self, prompt: str) -> str:
+        try:
+            r = self.model.generate_content(prompt)
+            return (r.text or "").strip()
+        except Exception as e:
+            return f"Error: {e}"
 
-        genai.configure(api_key=api_key)
-        self.model_name = model
-        self.max_retries = max_retries
-        self.model = genai.GenerativeModel(self.model_name)
-
-    def chat(
-        self,
-        prompt: str,
-        system: Optional[str] = None,
-        history: Optional[List[dict]] = None,
-        temperature: float = 0.7,
-        timeout_s: float = 60.0,
-    ) -> str:
-        """
-        Minimal, resilient wrapper around generate_content.
-        - `system`: optional system preamble
-        - `history`: [{'role':'user'|'model','parts':[str]}] if you keep chat state
-        """
-        messages = []
-        if system:
-            messages.append({"role": "user", "parts": [f"System:\n{system}"]})
-        if history:
-            messages.extend(history)
-        messages.append({"role": "user", "parts": [prompt]})
-
-        last_err = None
-        for attempt in range(self.max_retries + 1):
+    def chat_json_obj(self, prompt: str):
+        try:
+            r = self.model_json.generate_content(prompt)
+            raw = _strip_fences(r.text or "")
+            return json.loads(raw)
+        except Exception:
             try:
-                resp = self.model.generate_content(
-                    messages,
-                    generation_config={"temperature": temperature},
-                    request_options={"timeout": timeout_s},
-                )
-                return getattr(resp, "text", "").strip()
-            except Exception as e:
-                last_err = e
-                # simple backoff for transient issues (rate limits, timeouts)
-                if attempt < self.max_retries:
-                    time.sleep(0.6 * (attempt + 1))
-                else:
-                    return f"Error: {type(e).__name__}: {e}"
-
-        return f"Error: {last_err}"  # defensive fallback
-
+                r2 = self.model_json.generate_content("Return ONLY minified JSON for:\n" + prompt)
+                return json.loads(_strip_fences(r2.text or ""))
+            except Exception:
+                return None
