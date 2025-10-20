@@ -21,7 +21,7 @@ It includes both a **CLI tool** and a **Streamlit web interface** for easy use.
 ├── app.py                      # Streamlit front-end GUI
 ├── caesar_decoder.py           # Core Caesar cipher logic
 ├── caesar_decoder_test.py      # Test logic in CLI 
-/
+/tests
     ├── test_decoder.py         # Unit tests (pytest)
 ├── README.md                   # Documentation
 └── requirements.txt            # Dependencies
