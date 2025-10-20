@@ -1,4 +1,4 @@
-# caesar_en_cli.py  — English-only Caesar decoder, robust scoring, nice CLI.
+# CLI tool!
 # Python 3.8+
 
 # TEST BY RUNNING python caesar_decoder_test.py "example text"
