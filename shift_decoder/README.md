@@ -29,7 +29,7 @@ It includes both a **CLI tool** and a **Streamlit web interface** for easy use.
 
 ---
 
-## ⚙️ Setup
+## Setup
 
 ### 1. Clone or copy this project
 ```bash
