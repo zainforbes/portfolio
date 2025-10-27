@@ -17,7 +17,7 @@ It searches Wikipedia for any topic you type and summarizes the main insights cl
 
 ## 🧩 Requirements
 
-- Python 3.9+
+- Python 3.9
 - A valid **Google Gemini API key**
 - Internet connection (Wikipedia queries are live)
 
