@@ -1,10 +1,8 @@
-# Streamlit web GUI for Caesar cipher decoding.
-
 import streamlit as st
 from caesar_decoder import decrypt_all, find_best, caesar_shift
 
-st.set_page_config(page_title="Caesar Decoder", page_icon="🗝️", layout="wide")
-st.title("🗝️ Caesar Cipher Decoder (English)")
+st.set_page_config(page_title="Caesar Decoder", page_icon=" ", layout="wide")
+st.title("Caesar Cipher Decoder (English)")
 
 col1, col2 = st.columns([2, 1])
 
