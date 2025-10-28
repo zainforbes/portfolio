@@ -1,6 +1,6 @@
 # CLI TOOL 
 import sys, argparse, json
-import caesar_decoder as dec  # ← use your updated module
+import caesar_decoder as dec 
 
 def main():
     ap = argparse.ArgumentParser(description="English-only Caesar cipher decoder (auto-shift).")

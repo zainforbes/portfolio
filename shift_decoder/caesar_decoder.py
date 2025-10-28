@@ -1,5 +1,3 @@
-# Core Caesar cipher decoder logic — English-only, self-contained.
-
 import math, string
 from collections import Counter
 
@@ -20,12 +18,11 @@ COMMON_WORDS = {
 COMMON_BIGRAMS = {
     "th","he","in","er","an","re","on","at","en","nd","ti","es","or","te",
     "of","ed","is","it","al","ar","st","to","nt","ng","se","ha","as","ou",
-    "io","le","ve","co","me","de","hi","ri","ro","ic",
-    # extras that help short phrases like "Hello, World!"
-    "el","ll","lo","wo","rl","ld","ow"
+    "io","le","ve","co","me","de","hi","ri","ro","ic","el","ll","lo","wo",
+    "rl","ld","ow"
 }
 
-# A few very common English trigrams
+# Common English trigrams
 COMMON_TRIGRAMS = {
     "the","and","ing","her","ere","ent","tha","nth","was","eth","for",
     "dth","hat","his","ell","llo","wor","orl","rld","hel"
