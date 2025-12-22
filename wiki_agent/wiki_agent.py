@@ -15,7 +15,7 @@ def create_agent():
 
     # Initialize the agent (compatible with all stable Agno builds)
     agent = Agent(
-        model=Gemini(id="gemini-2.0-flash", api_key=api_key),
+        model=Gemini(id="gemini-2.5-flash", api_key=api_key),
         description="You are a researcher that finds and summarizes topics from Wikipedia.",
         tools=[WikipediaTools()],
         markdown=True
