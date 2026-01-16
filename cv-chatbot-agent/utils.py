@@ -1,8 +1,13 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Load .env in local dev
 load_dotenv()
+
+# Load .env from the same directory as this file (utils.py) or your project root
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
 
 def get_api_key() -> str:
     """

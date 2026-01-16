@@ -3,7 +3,7 @@ from utils import get_api_key
 
 class CVChatbot:
     API_URL = "https://api.groq.com/openai/v1/chat/completions"
-    MODEL   = "llama3-8b-8192"
+    MODEL   = "llama-3.3-70b-versatile"
 
     def __init__(self):
         self.api_key = get_api_key()
