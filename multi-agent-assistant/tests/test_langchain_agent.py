@@ -44,13 +44,11 @@ async def test_langchain_agent_ainvoke_basic(mock_gemini_key):
 async def test_langchain_agent_confirmation(mock_gemini_key):
     with patch("src.core.langchain_agent.ChatGoogleGenerativeAI"), \
          patch("src.core.langchain_agent.create_tool_calling_agent"), \
-         patch("src.core.langchain_agent.AgentExecutor"):
+         patch("src.core.langchain_agent.AgentExecutor"), \
+         patch("src.core.langchain_agent.gmail_send_actual") as mock_actual:
 
         agent = LangChainAgent()
-        # Mock a tool
-        mock_tool = AsyncMock()
-        mock_tool.name = "gmail_send"
-        agent.tools = [mock_tool]
+        mock_actual.return_value = {"status": "sent"}
 
         state = {
             "confirm": True,
@@ -64,6 +62,6 @@ async def test_langchain_agent_confirmation(mock_gemini_key):
 
         updated_state = await agent.ainvoke(state)
 
-        mock_tool.ainvoke.assert_called_once()
+        mock_actual.assert_called_once()
         assert updated_state["confirm"] is False
         assert updated_state["confirm_context"] is None

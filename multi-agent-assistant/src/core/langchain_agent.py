@@ -7,8 +7,15 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from datetime import datetime
 
-from .langchain_tools import get_all_tools
+from .langchain_tools import (
+    get_all_tools,
+    gmail_send_actual,
+    gcal_create_actual,
+    gcal_update_actual,
+    gcal_delete_actual
+)
 from .state_schema import AssistantState
 
 class StreamlitCallbackHandler(AsyncCallbackHandler):
@@ -112,19 +119,45 @@ Current time: {current_time}
             tool_name = ctx.get("tool")
             tool_args = ctx.get("args", {})
 
-            # Find the tool
-            target_tool = next((t for t in self.tools if t.name == tool_name), None)
-            if target_tool:
-                callback = StreamlitCallbackHandler(state)
-                # Manually execute the tool as the "agent"
-                result = await target_tool.ainvoke(tool_args, config={"callbacks": [callback]})
+            # Use the actual implementations for confirmed actions
+            actual_impls = {
+                "gmail_send": gmail_send_actual,
+                "gcal_create_event": gcal_create_actual,
+                "gcal_update_event": gcal_update_actual,
+                "gcal_delete_event": gcal_delete_actual,
+            }
 
-                # Update history and clear confirm
-                state["history"].append({"role": "user", "content": state.get("user_input", "Confirmed.")})
-                state["history"].append({"role": "assistant", "content": f"Action confirmed and executed: {tool_name}"})
-                state["confirm"] = False
-                state["confirm_context"] = None
-                return state
+            impl = actual_impls.get(tool_name)
+            if impl:
+                try:
+                    result = await impl(**tool_args)
+
+                    # Update history and clear confirm
+                    state["history"].append({"role": "user", "content": state.get("user_input", "Confirmed.")})
+                    msg = f"Action confirmed and executed: {tool_name}"
+                    state["history"].append({"role": "assistant", "content": msg})
+
+                    if "agent_messages" not in state:
+                        state["agent_messages"] = []
+
+                    # Push a final result message for the UI
+                    state["agent_messages"].append({
+                        "sender": "default",
+                        "message_type": "response",
+                        "payload": {"result": msg, "server_result": result}
+                    })
+
+                    state["confirm"] = False
+                    state["confirm_context"] = None
+                    return state
+                except Exception as e:
+                    error_msg = f"Error during confirmed execution: {str(e)}"
+                    state["agent_messages"].append({
+                        "sender": "default",
+                        "message_type": "error",
+                        "payload": {"result": error_msg}
+                    })
+                    return state
 
         # Convert history to LangChain format
         chat_history = []
@@ -135,7 +168,6 @@ Current time: {current_time}
                 chat_history.append(AIMessage(content=h["content"]))
 
         # Current time for the prompt
-        from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # Prepare inputs

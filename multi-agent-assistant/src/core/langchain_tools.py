@@ -45,7 +45,16 @@ async def gmail_send_message(to: str, subject: str, body: str) -> Dict[str, Any]
     Send an email via Gmail.
     Takes a recipient email address, subject, and message body.
     """
-    # Note: Using the second send_email implementation from gmail_server.py which takes a single 'to' string
+    # Mutating actions return a confirmation request that the UI handles
+    return {
+        "requires_confirmation": True,
+        "message": f"I'm ready to send this email to {to}. Confirm?",
+        "tool": "gmail_send",
+        "args": {"to": to, "subject": subject, "body": body}
+    }
+
+async def gmail_send_actual(to: str, subject: str, body: str) -> Dict[str, Any]:
+    """Actual implementation for confirmed send."""
     return await gmail_send_impl(to, subject, body)
 
 @tool("gcal_list_events")
@@ -73,6 +82,17 @@ async def google_calendar_create_event(
     Create a new event in Google Calendar.
     start_iso and end_iso should be RFC3339 strings or natural language (e.g., 'tomorrow 3pm').
     """
+    return {
+        "requires_confirmation": True,
+        "message": f"I'm ready to create the event '{summary}' on {start_iso}. Confirm?",
+        "tool": "gcal_create_event",
+        "args": {
+            "summary": summary, "start_iso": start_iso, "end_iso": end_iso,
+            "location": location, "description": description, "attendees": attendees
+        }
+    }
+
+async def gcal_create_actual(summary: str, start_iso: str, end_iso: str, location: str, description: str, attendees: Optional[List[str]]) -> Dict[str, Any]:
     return await create_event(summary, start_iso, end_iso, location, description, attendees)
 
 @tool("gcal_update_event")
@@ -88,13 +108,32 @@ async def google_calendar_update_event(
     Update an existing Google Calendar event.
     Only provided fields will be updated.
     """
+    return {
+        "requires_confirmation": True,
+        "message": f"I'm ready to update event {event_id}. Confirm?",
+        "tool": "gcal_update_event",
+        "args": {
+            "event_id": event_id, "summary": summary, "start_iso": start_iso,
+            "end_iso": end_iso, "location": location, "description": description
+        }
+    }
+
+async def gcal_update_actual(event_id: str, summary: Optional[str], start_iso: Optional[str], end_iso: Optional[str], location: Optional[str], description: Optional[str]) -> Dict[str, Any]:
     return await update_event(event_id, summary, start_iso, end_iso, location, description)
 
 @tool("gcal_delete_event")
-async def google_calendar_delete_event(event_id: str) -> bool:
+async def google_calendar_delete_event(event_id: str) -> Dict[str, Any]:
     """
     Delete a Google Calendar event by its ID.
     """
+    return {
+        "requires_confirmation": True,
+        "message": f"I'm ready to delete event {event_id}. Confirm?",
+        "tool": "gcal_delete_event",
+        "args": {"event_id": event_id}
+    }
+
+async def gcal_delete_actual(event_id: str) -> bool:
     return await delete_event(event_id)
 
 def get_all_tools() -> List[Any]:

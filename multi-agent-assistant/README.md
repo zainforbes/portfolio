@@ -1,6 +1,6 @@
 # Multi-Agent Personal AI Assistant
 
-A sophisticated personal AI assistant built with **LangGraph** that integrates **email, calendar, and web search** through Google APIs and MCP (Model Context Protocol) servers. The system uses intelligent routing and multi-agent coordination to handle complex tasks.
+A sophisticated personal AI assistant built with **LangChain** that integrates **email, calendar, and web search** through Google APIs and MCP (Model Context Protocol) servers. The system uses a tool-calling agent to handle complex tasks through intelligent planning and execution.
 
 ---
 
@@ -9,7 +9,7 @@ A sophisticated personal AI assistant built with **LangGraph** that integrates *
 - **Gmail Integration** – Read, compose, and send emails with intelligent drafting  
 - **Calendar Management** – View, create, and manage Google Calendar events  
 - **Web Search** – Brave Search integration for real-time information  
-- **Multi-Agent System** – Coordinated agents with intelligent task routing  
+- **LangChain-based Agent** – Unified agent logic with robust tool calling
 - **Smart Planning** – LLM-driven task decomposition and execution  
 - **Interactive UI** – Streamlit-based chat interface with confirmation workflows  
 - **Secure Authentication** – OAuth2 flow for Google services  
@@ -20,40 +20,31 @@ A sophisticated personal AI assistant built with **LangGraph** that integrates *
 
 ### Agent Interactions & Decision-Making
 
-The system employs a hierarchical multi-agent architecture with intelligent routing and coordination:
+The system employs a LangChain `ToolCallingAgent` that orchestrates various capabilities:
 
-#### 1. **Planner Brain (Central Orchestrator)**
-- **Role**: Primary decision maker and task decomposer  
-- **Intelligence**: Powered by Gemini LLM  
+#### 1. **LangChain Agent (Central Orchestrator)**
+- **Role**: Primary decision maker and task executor
+- **Intelligence**: Powered by Google Gemini LLM
 - **Process**:
   1. Analyze user input and conversation history  
-  2. Determine required actions and route to appropriate agents  
-  3. Generate step-by-step execution plans with confirmations  
-  4. Handle task dependencies and memory management  
+  2. Plan necessary steps and select appropriate tools
+  3. Execute tools sequentially, maintaining context between steps
+  4. Handle confirmation-gated actions for security
 
-#### 2. **Router Module**
-- Routes tasks to the correct agent based on intent classification  
-- Uses LLM + fallback rules with confidence scoring  
-
-#### 3. **Specialized Agents**
-- **Email Agent** – Gmail operations (list, read, compose, send)  
-- **Calendar Agent** – Google Calendar (list, create, update, delete)  
-- **Search Agent** – Web search via Brave API with synthesis  
-- **Default Agent** – General chat and fallback responses  
-- **Coordinator Agent** – Legacy orchestration using blackboard pattern  
+#### 2. **Specialized Tools**
+- **Email Tools** – Gmail operations (list, read, send)
+- **Calendar Tools** – Google Calendar (list, create, update, delete)
+- **Search Tool** – Web search via Brave API
 
 ---
 
-### Agent Responsibility Matrix
+### Tool Responsibility Matrix
 
-| Agent        | Primary Responsibility                       | Tools Used                                            | Confirmation |
-|--------------|-----------------------------------------------|-------------------------------------------------------|--------------|
-| **Planner**  | Task decomposition, routing, memory           | Gemini LLM                                            | No           |
-| **Email**    | Gmail ops, drafting, sending                 | `gmail_list`, `gmail_read`, `gmail_send`              | Send only    |
-| **Calendar** | Scheduling, queries, conflict detection      | `gcal_list`, `gcal_create`, `gcal_update`, `gcal_delete` | Mutations   |
-| **Search**   | Web research, synthesis, info gathering      | `web_search` (Brave API)                              | No           |
-| **Default**  | General conversation, fallback               | Gemini chat                                           | No           |
-| **Coordinator** | Legacy orchestration                      | All agents                                            | Contextual   |
+| Tool Category | Responsibility                           | Underlying Implementation                              | Confirmation |
+|---------------|------------------------------------------|--------------------------------------------------------|--------------|
+| **Email**     | Gmail ops, drafting, sending             | `gmail_list_recent`, `gmail_read`, `gmail_send`        | Mutating ops |
+| **Calendar**  | Scheduling, queries, conflict detection  | `gcal_list_events`, `gcal_create`, `gcal_update`, ...  | Mutating ops |
+| **Search**    | Web research, synthesis, info gathering  | `web_search` (Brave API)                               | No           |
 
 ---
 
@@ -61,29 +52,29 @@ The system employs a hierarchical multi-agent architecture with intelligent rout
 
 ### State Management
 - Centralized **AssistantState** schema with memory/history  
-- Cross-agent blackboard for data sharing  
-- Structured `agent_messages` for UI  
+- Shared context handled by LangChain's internal scratchpad
+- Structured `agent_messages` for real-time UI updates via `StreamlitCallbackHandler`
 
 ### Confirmation Workflow
-1. Planner generates plan → requires confirmation  
-2. User approves (e.g., “send”)  
-3. Agent executes or cancels  
+1. Agent identifies a mutating action (e.g., sending an email)
+2. System pauses and requests user confirmation in the UI
+3. User approves (e.g., “send”) or provides edits
+4. Action is executed only after explicit confirmation
 
 ### Error Handling
-- Graceful fallback to default agent  
-- Clear error messages with suggestions  
-- State preserved for retries  
+- Graceful recovery from tool errors
+- Clear error messages displayed in the UI
+- State preservation for seamless continuation
 
 ---
 
 ## 🗂️ Tool Integration
 
-Uses **MCP Clients** for Gmail, Calendar, and Search servers, which connect to APIs (Google Gmail, Google Calendar, Brave Search).  
+The agent uses a suite of tools that connect to external services via the Model Context Protocol (MCP) server patterns.
 
 ### Data Flow
-- User Input → Planner → Router → Agent → Tool Execution → Response  
-- Results stored in shared memory with namespaces  
-- Secure OAuth2 token management  
+- User Input → LangChain Agent → Tool Selection → Tool Execution → UI Update → Final Response
+- Secure OAuth2 token management for Google services
 
 ---
 
@@ -92,7 +83,7 @@ Uses **MCP Clients** for Gmail, Calendar, and Search servers, which connect to A
 - Fully **async/await** operations  
 - Respects API quotas (Google + Brave)  
 - Intelligent caching with `cache_manager.py`  
-- Rolling conversation history (20 turns)  
+- Rolling conversation history management
 
 ---
 
@@ -174,32 +165,26 @@ Add both to `.env`.
 ## 🧪 Testing
 
 ```bash
-python scripts/gmail_smoke.py
-python scripts/calendar_smoke.py
-python scripts/search_smoke.py
-python scripts/cache_smoke.py
+python -m pytest tests/test_langchain_agent.py
 ```
 
 ---
 
 ## 🏗️ Architecture
 
-- **Core**: LangGraph workflow orchestration  
-- **Agents**: Specialized agents for email, calendar, search, coordination  
-- **Intelligence**: Planning, routing, verification, synthesis modules  
-- **MCP Integration**: Model Context Protocol servers for external services  
-- **UI**: Streamlit-based chat  
+- **Core**: LangChain agent orchestration
+- **Tools**: Specialized wrappers for email, calendar, and search
+- **UI**: Streamlit-based chat with custom callback handlers for real-time trace
 
 ---
 
 ## 📦 Dependencies
 
 - `streamlit` – Web UI  
-- `langgraph` – Workflow orchestration  
-- `langchain` – LLM framework  
-- `google-generativeai` – Gemini integration  
+- `langchain` – Agent framework and tool orchestration
+- `langchain-google-genai` – Google Gemini integration for LangChain
 - `google-api-python-client` – Google APIs  
-- `mcp` – Model Context Protocol  
+- `mcp` – Model Context Protocol concepts
 - `aiohttp` – Async HTTP client  
 
 ---
