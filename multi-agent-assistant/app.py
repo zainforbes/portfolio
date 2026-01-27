@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, List, Tuple
 import streamlit as st
 from dotenv import load_dotenv, find_dotenv
 
-from src.core.langgraph_workflow import build_workflow
+from src.core.langchain_agent import LangChainAgent
 from src.utils.gemini_client import GeminiClient
 
 # -----------------------------
@@ -18,8 +18,8 @@ st.set_page_config(page_title="Personal AI Assistant", page_icon="🤖", layout=
 # -----------------------------
 # Session singletons
 # -----------------------------
-if "wf" not in st.session_state:
-    st.session_state["wf"] = build_workflow()
+if "agent" not in st.session_state:
+    st.session_state["agent"] = LangChainAgent()
 
 if "gem" not in st.session_state:
     st.session_state["gem"] = None
@@ -62,16 +62,16 @@ def _get_gemini() -> Optional[GeminiClient]:
     return st.session_state["gem"]
 
 
-def _run_graph_sync(state: Dict[str, Any]) -> Dict[str, Any]:
-    wf = st.session_state["wf"]
+def _run_agent_sync(state: Dict[str, Any]) -> Dict[str, Any]:
+    agent = st.session_state["agent"]
     try:
-        return asyncio.run(wf.ainvoke(state))
+        return asyncio.run(agent.ainvoke(state))
     except RuntimeError:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            fut = asyncio.run_coroutine_threadsafe(wf.ainvoke(state), loop)
+            fut = asyncio.run_coroutine_threadsafe(agent.ainvoke(state), loop)
             return fut.result()
-        return loop.run_until_complete(wf.ainvoke(state))
+        return loop.run_until_complete(agent.ainvoke(state))
 
 
 def _md_link(url: str, text: Optional[str] = None) -> str:
@@ -302,7 +302,7 @@ def run_turn(user_text: str, *, confirm: bool = False, confirm_context: Optional
     if confirm_context:
         state["confirm_context"] = confirm_context
 
-    out = _run_graph_sync(state)
+    out = _run_agent_sync(state)
 
     # Persist
     st.session_state["agent_messages_state"] = out.get("agent_messages", [])
