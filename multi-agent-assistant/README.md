@@ -1,107 +1,79 @@
 # Multi-Agent Personal AI Assistant
 
-A sophisticated personal AI assistant built with **LangGraph** that integrates **email, calendar, and web search** through Google APIs and MCP (Model Context Protocol) servers. The system uses intelligent routing and multi-agent coordination to handle complex tasks.
+A sophisticated personal AI assistant built with **LangChain** that integrates **email, calendar, and web search** through Google APIs and Brave Search. The system uses LangChain's tool-calling capabilities to handle complex tasks with intelligent reasoning.
 
 ---
 
 ## ✨ Features
 
-- **Gmail Integration** – Read, compose, and send emails with intelligent drafting  
-- **Calendar Management** – View, create, and manage Google Calendar events  
-- **Web Search** – Brave Search integration for real-time information  
-- **Multi-Agent System** – Coordinated agents with intelligent task routing  
-- **Smart Planning** – LLM-driven task decomposition and execution  
-- **Interactive UI** – Streamlit-based chat interface with confirmation workflows  
-- **Secure Authentication** – OAuth2 flow for Google services  
+- **Gmail Integration** – Read, list, and send emails directly from the chat
+- **Calendar Management** – View, create, update, and delete Google Calendar events
+- **Web Search** – Brave Search integration for real-time information gathering
+- **Intelligent Reasoning** – Powered by Google Gemini models for task planning and tool selection
+- **Interactive UI** – Streamlit-based chat interface with real-time feedback
+- **Secure Authentication** – OAuth2 flow for Google services and environment-based API keys
 
 ---
 
 ## 🧠 System Architecture
 
-### Agent Interactions & Decision-Making
+### Agent Logic
 
-The system employs a hierarchical multi-agent architecture with intelligent routing and coordination:
+The system uses a unified **LangChain Agent** that leverages the `gemini-1.5-flash` model for reasoning and execution.
 
-#### 1. **Planner Brain (Central Orchestrator)**
-- **Role**: Primary decision maker and task decomposer  
-- **Intelligence**: Powered by Gemini LLM  
-- **Process**:
-  1. Analyze user input and conversation history  
-  2. Determine required actions and route to appropriate agents  
-  3. Generate step-by-step execution plans with confirmations  
-  4. Handle task dependencies and memory management  
+#### 1. **Core Agent (`LangChainAgent`)**
+- **Orchestration**: Built using LangChain's `create_tool_calling_agent`.
+- **Reasoning**: Analyzes user input, maintains conversation history, and decides which tools to call.
+- **Tools**: Accesses specialized modules for Gmail, Google Calendar, and Brave Search.
+- **Callbacks**: Uses custom Streamlit callbacks to provide real-time updates of tool execution in the UI.
 
-#### 2. **Router Module**
-- Routes tasks to the correct agent based on intent classification  
-- Uses LLM + fallback rules with confidence scoring  
-
-#### 3. **Specialized Agents**
-- **Email Agent** – Gmail operations (list, read, compose, send)  
-- **Calendar Agent** – Google Calendar (list, create, update, delete)  
-- **Search Agent** – Web search via Brave API with synthesis  
-- **Default Agent** – General chat and fallback responses  
-- **Coordinator Agent** – Legacy orchestration using blackboard pattern  
+#### 2. **Tool Ecosystem**
+- **Email Tool**: Interfaces with Gmail API for listing, reading, and sending messages.
+- **Calendar Tool**: Manages Google Calendar events with natural language support for dates and times.
+- **Search Tool**: Utilizes Brave Search API for up-to-date web information.
 
 ---
 
 ### Agent Responsibility Matrix
 
-| Agent        | Primary Responsibility                       | Tools Used                                            | Confirmation |
-|--------------|-----------------------------------------------|-------------------------------------------------------|--------------|
-| **Planner**  | Task decomposition, routing, memory           | Gemini LLM                                            | No           |
-| **Email**    | Gmail ops, drafting, sending                 | `gmail_list`, `gmail_read`, `gmail_send`              | Send only    |
-| **Calendar** | Scheduling, queries, conflict detection      | `gcal_list`, `gcal_create`, `gcal_update`, `gcal_delete` | Mutations   |
-| **Search**   | Web research, synthesis, info gathering      | `web_search` (Brave API)                              | No           |
-| **Default**  | General conversation, fallback               | Gemini chat                                           | No           |
-| **Coordinator** | Legacy orchestration                      | All agents                                            | Contextual   |
+| Agent Component | Primary Responsibility                       | Tools Used                                            | Confirmation |
+|-----------------|-----------------------------------------------|-------------------------------------------------------|--------------|
+| **Gemini LLM**  | Reasoning, tool selection, response synthesis | `google-generativeai`                                 | No           |
+| **Email**       | Gmail operations (list, read, send)          | `gmail_list`, `gmail_read`, `gmail_send`              | Yes (Manual) |
+| **Calendar**    | Scheduling, queries, event management        | `gcal_list`, `gcal_create`, `gcal_update`, `gcal_delete` | Yes (Manual) |
+| **Search**      | Web research and information gathering       | `web_search` (Brave API)                              | No           |
 
 ---
 
 ## 🔌 Communication & Workflows
 
 ### State Management
-- Centralized **AssistantState** schema with memory/history  
-- Cross-agent blackboard for data sharing  
-- Structured `agent_messages` for UI  
+- **AssistantState**: A centralized schema for maintaining conversation history, agent messages, and session memory.
+- **Real-time Feedback**: Tool execution steps are pushed to the UI as they happen, giving visibility into the assistant's "thinking" process.
 
 ### Confirmation Workflow
-1. Planner generates plan → requires confirmation  
-2. User approves (e.g., “send”)  
-3. Agent executes or cancels  
-
-### Error Handling
-- Graceful fallback to default agent  
-- Clear error messages with suggestions  
-- State preserved for retries  
+1. Certain actions (like sending an email or creating a calendar event) can be configured to require explicit user confirmation.
+2. The agent prepares the action and waits for a "send" or "confirm" command from the user.
+3. Once confirmed, the action is executed via the corresponding tool.
 
 ---
 
 ## 🗂️ Tool Integration
 
-Uses **MCP Clients** for Gmail, Calendar, and Search servers, which connect to APIs (Google Gmail, Google Calendar, Brave Search).  
+The system integrates with external services using specialized server implementations:
 
-### Data Flow
-- User Input → Planner → Router → Agent → Tool Execution → Response  
-- Results stored in shared memory with namespaces  
-- Secure OAuth2 token management  
-
----
-
-## ⚡ Performance
-
-- Fully **async/await** operations  
-- Respects API quotas (Google + Brave)  
-- Intelligent caching with `cache_manager.py`  
-- Rolling conversation history (20 turns)  
+- **Search**: `search_server.py` handles Brave Search API calls with TTL caching.
+- **Gmail**: `gmail_server.py` manages Google OAuth2 and Gmail API interactions.
+- **Calendar**: `calendar_server.py` handles Google Calendar with robust time normalization for natural language queries.
 
 ---
 
 ## 🔧 Prerequisites
 
-- Python 3.8+  
-- Google Cloud account with Gmail + Calendar APIs enabled  
-- Brave Search API key  
-- Google Gemini API key  
+- Python 3.8+
+- Google Cloud project with Gmail and Calendar APIs enabled
+- Brave Search API key
+- Google Gemini API key (from AI Studio)
 
 ---
 
@@ -136,7 +108,7 @@ Uses **MCP Clients** for Gmail, Calendar, and Search servers, which connect to A
    - Enable Gmail + Calendar APIs  
    - Create OAuth credentials (Desktop App)  
    - Save as `config/credentials.json`  
-   - Run bootstrap:  
+   - Run bootstrap to generate `token.json`:
      ```bash
      python scripts/google_oauth_bootstrap.py
      ```
@@ -149,63 +121,24 @@ Uses **MCP Clients** for Gmail, Calendar, and Search servers, which connect to A
 streamlit run app.py
 ```
 
-Open in browser: [http://localhost:8501](http://localhost:8501)
-
----
-
-## 🔑 API Keys Setup
-
-- **Gemini API Key**: Get from [Google AI Studio](https://aistudio.google.com/)  
-- **Brave Search Key**: Get from [Brave Search API](https://brave.com/search/api/)  
-
-Add both to `.env`.  
-
----
-
-## 💡 Usage Examples
-
-- **Email**: “Check my recent emails” / “Send an email to john@example.com”  
-- **Calendar**: “What’s on my calendar today?” / “Schedule a meeting tomorrow at 3pm”  
-- **Search**: “Search the latest AI news” / “Find info about Python asyncio”  
-- **Multi-step**: “Search for X, summarize, and email Y”  
-
 ---
 
 ## 🧪 Testing
 
+The project includes a comprehensive test suite using `pytest`.
+
 ```bash
-python scripts/gmail_smoke.py
-python scripts/calendar_smoke.py
-python scripts/search_smoke.py
-python scripts/cache_smoke.py
+pytest tests/
 ```
 
----
-
-## 🏗️ Architecture
-
-- **Core**: LangGraph workflow orchestration  
-- **Agents**: Specialized agents for email, calendar, search, coordination  
-- **Intelligence**: Planning, routing, verification, synthesis modules  
-- **MCP Integration**: Model Context Protocol servers for external services  
-- **UI**: Streamlit-based chat  
+Individual smoke scripts are also available in `scripts/`.
 
 ---
 
-## 📦 Dependencies
+## 🏗️ Technical Stack
 
-- `streamlit` – Web UI  
-- `langgraph` – Workflow orchestration  
-- `langchain` – LLM framework  
-- `google-generativeai` – Gemini integration  
-- `google-api-python-client` – Google APIs  
-- `mcp` – Model Context Protocol  
-- `aiohttp` – Async HTTP client  
-
----
-
-## 🛡️ Security Notes
-
-- Do **not** commit `credentials.json` or `token.json`  
-- Store API keys in environment variables  
-- Regularly review OAuth scopes and permissions  
+- **Framework**: LangChain
+- **LLM**: Google Gemini 1.5 Flash
+- **UI**: Streamlit
+- **APIs**: Google Gmail, Google Calendar, Brave Search
+- **Asynchronous**: Built with `asyncio` and `httpx` for high performance
