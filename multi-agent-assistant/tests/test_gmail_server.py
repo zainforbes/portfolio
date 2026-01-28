@@ -67,3 +67,14 @@ async def test_send_email(mock_google_auth, mock_gmail_service):
     assert result["id"] == "sent_123"
     assert result["status"] == "sent"
     mock_gmail_service.users().messages().send.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_send_email_list(mock_google_auth, mock_gmail_service):
+    mock_send_req = MagicMock()
+    mock_gmail_service.users().messages().send.return_value = mock_send_req
+    mock_send_req.execute.return_value = {"id": "sent_456"}
+
+    result = await send_email(to=["a@test.com", "b@test.com"], subject="Hello", body="World")
+
+    assert result["id"] == "sent_456"
+    assert result["status"] == "sent"

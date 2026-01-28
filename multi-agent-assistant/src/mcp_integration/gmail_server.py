@@ -1,10 +1,7 @@
 from __future__ import annotations
 import base64, asyncio
 from email.message import EmailMessage
-import base64
 from typing import List, Dict, Any, Optional
-from email.mime.text import MIMEText
-from email.utils import formataddr
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from src.utils.google_auth import get_credentials, GMAIL_SCOPES
@@ -42,41 +39,44 @@ async def read_email(message_id: str) -> Dict:
     return m
 
 # ---- WRITE ----
-def _build_raw(from_name: Optional[str], to: List[str], subject: str, body: str, cc: List[str] | None = None, bcc: List[str] | None = None) -> str:
-    msg = MIMEText(body, _subtype="plain", _charset="utf-8")
-    msg["To"] = ", ".join(to)
-    if cc:  msg["Cc"]  = ", ".join(cc)
-    if bcc: msg["Bcc"] = ", ".join(bcc)
-    msg["From"] = formataddr((from_name or "", "me"))  # "me" is fine; Gmail replaces with your account
-    msg["Subject"] = subject
-    return base64.urlsafe_b64encode(msg.as_bytes()).decode()
+def _build_raw_message(to: str | List[str], subject: str, body: str, cc: Optional[str | List[str]] = None, bcc: Optional[str | List[str]] = None) -> str:
+    msg = EmailMessage()
 
-async def create_draft(to: List[str], subject: str, body: str, cc: List[str] | None = None, bcc: List[str] | None = None) -> Dict:
+    if isinstance(to, list):
+        msg["To"] = ", ".join(to)
+    else:
+        msg["To"] = to
+
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    if cc:
+        if isinstance(cc, list):
+            msg["Cc"] = ", ".join(cc)
+        else:
+            msg["Cc"] = cc
+
+    if bcc:
+        if isinstance(bcc, list):
+            msg["Bcc"] = ", ".join(bcc)
+        else:
+            msg["Bcc"] = bcc
+
+    return base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+
+async def create_draft(to: str | List[str], subject: str, body: str, cc: Optional[str | List[str]] = None, bcc: Optional[str | List[str]] = None) -> Dict:
     creds = get_credentials(GMAIL_SCOPES)
     service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
-    raw = _build_raw(None, to, subject, body, cc, bcc)
+    raw = _build_raw_message(to, subject, body, cc, bcc)
     draft = {"message": {"raw": raw}}
     req = service.users().drafts().create(userId="me", body=draft)
     return await asyncio.to_thread(req.execute)
 
-async def send_email(to: List[str], subject: str, body: str, cc: List[str] | None = None, bcc: List[str] | None = None) -> Dict:
+async def send_email(to: str | List[str], subject: str, body: str, cc: Optional[str | List[str]] = None, bcc: Optional[str | List[str]] = None) -> Dict[str, Any]:
+    """Send an email via Gmail API."""
     creds = get_credentials(GMAIL_SCOPES)
     service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
-    raw = _build_raw(None, to, subject, body, cc, bcc)
-    req = service.users().messages().send(userId="me", body={"raw": raw})
-    return await asyncio.to_thread(req.execute)
-
-async def send_email(to: str, subject: str, body: str) -> Dict[str, Any]:
-    """Send an email via Gmail API."""
-    creds = get_credentials(GMAIL_SCOPES)  # ensure scope includes gmail.send
-    service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
-
-    msg = EmailMessage()
-    msg["To"] = to
-    msg["Subject"] = subject
-    msg.set_content(body)
-
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+    raw = _build_raw_message(to, subject, body, cc, bcc)
     req = service.users().messages().send(userId="me", body={"raw": raw})
     res = await asyncio.to_thread(req.execute)
     return {"id": res.get("id"), "status": "sent"}
