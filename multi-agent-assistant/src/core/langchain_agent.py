@@ -73,7 +73,7 @@ class LangChainAgent:
             raise RuntimeError("GEMINI_API_KEY missing")
 
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
+            model="gemini-2.0-flash",
             google_api_key=api_key,
             temperature=0
         )

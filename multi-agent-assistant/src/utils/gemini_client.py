@@ -18,9 +18,9 @@ class GeminiClient:
         if not key:
             raise RuntimeError("GEMINI_API_KEY missing")
         genai.configure(api_key=key)
-        self.model = genai.GenerativeModel("gemini-2.5-flash-lite")
+        self.model = genai.GenerativeModel("gemini-2.0-flash-lite")
         self.model_json = genai.GenerativeModel(
-            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash-lite",
             generation_config={"response_mime_type": "application/json"}
         )
 
